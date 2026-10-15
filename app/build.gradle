@@ -11,15 +11,18 @@ android {
         applicationId "com.pratik.nothingcivi"
         minSdk 29
         targetSdk 34
-        versionCode 1
-        versionName "4.0-Civi"
+        versionCode 2
+        versionName "4.0.1-Civi"
     }
 
     buildTypes {
         release {
-            minifyEnabled true
-            shrinkResources true
+            minifyEnabled false
+            shrinkResources false
             signingConfig signingConfigs.debug
+        }
+        debug {
+            minifyEnabled false
         }
     }
 
