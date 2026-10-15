@@ -5,6 +5,7 @@
     <uses-permission android:name="android.permission.EXPAND_STATUS_BAR" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
 
     <queries>
         <intent>
@@ -15,7 +16,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="Nothing OS 4 Civi"
+        android:label="KINETIC OS 4.0"
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
         android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
