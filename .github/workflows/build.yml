@@ -1,9 +1,12 @@
-name: Build Nothing OS 4 Civi APK
+name: Build Kinetic OS 4 Civi APK
 
 on:
   push:
     branches: [ "main", "master" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -24,11 +27,20 @@ jobs:
           gradle-version: '8.7'
           cache-disabled: true
 
-      - name: Build Signed Debug APK
-        run: gradle assembleDebug --no-build-cache
+      - name: Compile Signed APK
+        run: |
+          gradle assembleDebug --no-build-cache
+          cp app/build/outputs/apk/debug/app-debug.apk Kinetic-OS-4.0-Civi.apk
 
-      - name: Upload Ready-to-Install APK
+      - name: Publish Direct .APK File to GitHub Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create v4.0 Kinetic-OS-4.0-Civi.apk --title "Kinetic OS 4.0 Civi APK" --notes "Direct installable Kinetic-OS-4.0-Civi.apk (No ZIP extraction needed)" --clobber || gh release upload v4.0 Kinetic-OS-4.0-Civi.apk --clobber
+          gh release upload Launcher Kinetic-OS-4.0-Civi.apk --clobber || true
+
+      - name: Upload Ready-to-Install APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Nothing-OS4-Civi-APK
-          path: app/build/outputs/apk/debug/*.apk
+          path: Kinetic-OS-4.0-Civi.apk
