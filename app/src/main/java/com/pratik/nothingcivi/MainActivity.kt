@@ -4,7 +4,6 @@ import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.AlertDialog
-import android.app.WallpaperManager
 import android.content.*
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
@@ -45,7 +44,6 @@ data class AppEntry(
 
 class MainActivity : Activity(), SensorEventListener {
 
-    // Dynamic Extra Dark Mode vs Graphite Mode Palette
     private var isExtraDark = true
     private val COLOR_BG get() = if (isExtraDark) Color.parseColor("#000000") else Color.parseColor("#0D0E11")
     private val COLOR_CARD get() = if (isExtraDark) Color.parseColor("#111111") else Color.parseColor("#191B20")
@@ -59,7 +57,6 @@ class MainActivity : Activity(), SensorEventListener {
     private val bgExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    // App & Personalization State
     private val allApps = mutableListOf<AppEntry>()
     private val favoritePkgs = mutableListOf<String>()
     private val maxIconPkgs = mutableSetOf<String>()
@@ -68,19 +65,17 @@ class MainActivity : Activity(), SensorEventListener {
     private val mindfulPkgs = mutableSetOf<String>()
     private val customFolders = mutableMapOf<String, MutableList<String>>()
 
-    // OS 4.0 Settings & Toggles
     private var isMonoIcons = true
     private var isSmartDrawer = false
     private var includeHiddenInSearch = false
     private var gridColumns = 4
-    private var clockFaceMode = 0 // 0=Dot Clock, 1=UTC Dual, 2=Lock Minimal, 3=Civi RAM/CPU
-    private var widgetSizeSpan = 1 // 1 = 1x1 compact, 2 = 2x1 wide widgets
+    private var clockFaceMode = 0
+    private var widgetSizeSpan = 1
     private var isTorchOn = false
     private var isDrawerOpen = false
     private var isNoteExpanded = false
-    private var drawerViewTab = 0 // 0=All Apps, 1=Hidden Icons, 2=Private Space (PIN)
+    private var drawerViewTab = 0
 
-    // Pedometer, Screen Time & Weather State
     private var sensorManager: SensorManager? = null
     private var stepBaseline = -1f
     private var dailySteps = 0
@@ -89,41 +84,31 @@ class MainActivity : Activity(), SensorEventListener {
     private var weatherCity = "AHMEDABAD"
     private var weatherCond = "CLEAR"
 
-    // Glyph Progress Live Timer State
     private var glyphRunning = false
     private var glyphSecondsLeft = 25 * 60
     private var glyphRunnable: Runnable? = null
 
-    // UI References
     private lateinit var rootStack: FrameLayout
     private lateinit var homeContainer: LinearLayout
     private lateinit var drawerContainer: LinearLayout
     private lateinit var dotMatrixHeader: DotMatrixView
     private lateinit var telemetrySubText: TextView
     private lateinit var faceBadgeText: TextView
-
-    // OS 4.0 Widgets (Weather, Pedometer, Screen Time)
     private lateinit var widgetsGrid: GridLayout
     private lateinit var weatherWidgetText: TextView
     private lateinit var pedometerWidgetText: TextView
     private lateinit var pedometerBar: DotProgressBarView
     private lateinit var screenTimeWidgetText: TextView
-
-    // Glyph & Media Bento
     private lateinit var glyphStatusText: TextView
     private lateinit var glyphProgressView: DotProgressBarView
     private lateinit var noteInput: EditText
     private lateinit var foldersRowLayout: LinearLayout
     private lateinit var favGridLayout: GridLayout
     private lateinit var dockLayout: LinearLayout
-
-    // Quick Settings Tiles
     private lateinit var torchTileBtn: TextView
     private lateinit var monoTileBtn: TextView
     private lateinit var ringerTileBtn: TextView
     private lateinit var themeTileBtn: TextView
-
-    // App Drawer & Search UI
     private lateinit var searchInput: EditText
     private lateinit var calcResultBanner: TextView
     private lateinit var appsGridView: GridView
@@ -153,11 +138,9 @@ class MainActivity : Activity(), SensorEventListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         lock120HzDisplay()
-
         prefs = getSharedPreferences("kinetic_os4_complete", Context.MODE_PRIVATE)
         loadSavedState()
         initStepSensor()
-
         buildUserInterface()
         updateAllWidgets()
         loadInstalledAppsAsync()
@@ -275,17 +258,12 @@ class MainActivity : Activity(), SensorEventListener {
             setBackgroundColor(if (isExtraDark) Color.argb(245, 0, 0, 0) else Color.argb(235, 13, 14, 17))
         }
 
-        // ================= HOME SCREEN LAYER =================
         homeContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(36), dp(16), dp(14))
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
-        // 1. Top Dot-Matrix Clock + OS Settings Button
         val clockCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = roundRect(COLOR_CARD, dp(22), COLOR_STROKE)
@@ -339,38 +317,25 @@ class MainActivity : Activity(), SensorEventListener {
         clockCard.addView(telemetrySubText)
         homeContainer.addView(clockCard)
 
-        // 2. Nothing OS 4.0 Widgets Bar (Weather, Pedometer, Screen Time with 1x1 / 2x1 Resize)
         widgetsGrid = GridLayout(this).apply {
             columnCount = 3
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
         }
         buildResizableOS4Widgets()
         homeContainer.addView(widgetsGrid)
 
-        // 3. Glyph Progress Live Updates + Media Controller Strip
         val bentoRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
         }
 
         val glyphCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = roundRect(COLOR_CARD, dp(18), COLOR_STROKE)
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.15f).apply {
-                rightMargin = dp(6)
-            }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.15f).apply { rightMargin = dp(6) }
             setOnClickListener { toggleGlyphTimer() }
-            setOnLongClickListener {
-                resetGlyphTimer()
-                true
-            }
+            setOnLongClickListener { resetGlyphTimer(); true }
         }
 
         glyphStatusText = TextView(this).apply {
@@ -381,9 +346,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         glyphProgressView = DotProgressBarView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14)).apply {
-                topMargin = dp(4)
-            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(14)).apply { topMargin = dp(4) }
         }
 
         glyphCard.addView(glyphStatusText)
@@ -406,10 +369,7 @@ class MainActivity : Activity(), SensorEventListener {
         val mediaBtns = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
         fun mediaBtn(lbl: String, key: Int, red: Boolean = false): TextView {
@@ -420,10 +380,7 @@ class MainActivity : Activity(), SensorEventListener {
                 gravity = Gravity.CENTER
                 setTextColor(if (red) COLOR_RED else COLOR_WHITE)
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-                setOnClickListener {
-                    vibrateTick(false)
-                    dispatchMediaKey(key)
-                }
+                setOnClickListener { vibrateTick(false); dispatchMediaKey(key) }
             }
         }
 
@@ -437,13 +394,9 @@ class MainActivity : Activity(), SensorEventListener {
         bentoRow.addView(mediaCard)
         homeContainer.addView(bentoRow)
 
-        // 4. Quick Settings Tiles Row (Torch, Mono, Ringer, Extra Dark / Note)
         val tilesRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
         }
 
         torchTileBtn = createQuickTile("TORCH", false) { toggleFlashlight() }
@@ -464,7 +417,6 @@ class MainActivity : Activity(), SensorEventListener {
         tilesRow.addView(themeTileBtn, LinearLayout.LayoutParams(0, dp(34), 1f))
         homeContainer.addView(tilesRow)
 
-        // Offline Essential Note Playground
         noteInput = EditText(this).apply {
             hint = "PLAYGROUND MEMO // OFFLINE ESSENTIAL NOTE..."
             setHintTextColor(COLOR_MUTED)
@@ -475,10 +427,7 @@ class MainActivity : Activity(), SensorEventListener {
             background = roundRect(COLOR_CARD_ALT, dp(16), COLOR_RED)
             setPadding(dp(12), dp(8), dp(12), dp(8))
             visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(6) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(6) }
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -489,47 +438,31 @@ class MainActivity : Activity(), SensorEventListener {
         }
         homeContainer.addView(noteInput)
 
-        // 5. App Folders Bar
         val folderScroll = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(8) }
         }
-        foldersRowLayout = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
+        foldersRowLayout = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         folderScroll.addView(foldersRowLayout)
         homeContainer.addView(folderScroll)
 
-        // 6. Scrollable Home Screen App & Max-Icon Grid
         val favScroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply {
-                topMargin = dp(4)
-            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(4) }
         }
         favGridLayout = GridLayout(this).apply {
             columnCount = gridColumns
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
         favScroll.addView(favGridLayout)
         homeContainer.addView(favScroll)
 
-        // 7. Essential Search Bar on Home Screen
         val searchPill = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = roundRect(COLOR_CARD, dp(24), COLOR_STROKE)
             setPadding(dp(14), dp(10), dp(14), dp(10))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) }
             setOnClickListener { openDrawer(focusKeyboard = true) }
         }
 
@@ -547,7 +480,6 @@ class MainActivity : Activity(), SensorEventListener {
         searchPill.addView(searchLbl)
         homeContainer.addView(searchPill)
 
-        // 8. Bottom Dock
         dockLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -557,26 +489,18 @@ class MainActivity : Activity(), SensorEventListener {
         }
         homeContainer.addView(dockLayout)
 
-        // ================= APP DRAWER LAYER (WITH HIDDEN & PRIVATE SPACE TABS) =================
         drawerContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(COLOR_BG)
             setPadding(dp(16), dp(38), dp(16), dp(12))
             visibility = View.GONE
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
-        // Search Input + Scope Config Button
         val drawerSearchRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) }
         }
 
         searchInput = EditText(this).apply {
@@ -624,31 +548,19 @@ class MainActivity : Activity(), SensorEventListener {
         drawerSearchRow.addView(scopeBtn)
         drawerContainer.addView(drawerSearchRow)
 
-        // Drawer Mode Tabs: [A-Z] [SMART CATS] [HIDDEN ICONS] [PRIVATE SPACE]
         val tabsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(10) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(10) }
         }
 
         tabAllBtn = createQuickTile("A-Z APPS", drawerViewTab == 0 && !isSmartDrawer) {
-            drawerViewTab = 0
-            isSmartDrawer = false
-            updateDrawerTabStyles()
-            renderAppDrawer(searchInput.text.toString())
+            drawerViewTab = 0; isSmartDrawer = false; updateDrawerTabStyles(); renderAppDrawer(searchInput.text.toString())
         }
         tabSmartBtn = createQuickTile("CATEGORIES", drawerViewTab == 0 && isSmartDrawer) {
-            drawerViewTab = 0
-            isSmartDrawer = true
-            updateDrawerTabStyles()
-            renderAppDrawer(searchInput.text.toString())
+            drawerViewTab = 0; isSmartDrawer = true; updateDrawerTabStyles(); renderAppDrawer(searchInput.text.toString())
         }
         tabHiddenBtn = createQuickTile("HIDDEN (${hiddenPkgs.size})", drawerViewTab == 1) {
-            drawerViewTab = 1
-            updateDrawerTabStyles()
-            renderAppDrawer(searchInput.text.toString())
+            drawerViewTab = 1; updateDrawerTabStyles(); renderAppDrawer(searchInput.text.toString())
         }
         tabPrivateBtn = createQuickTile("PRIVATE 🔒", drawerViewTab == 2) {
             authenticatePrivateSpace()
@@ -667,10 +579,7 @@ class MainActivity : Activity(), SensorEventListener {
             background = roundRect(COLOR_CARD_ALT, dp(14), COLOR_RED)
             setPadding(dp(12), dp(8), dp(12), dp(8))
             visibility = View.GONE
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { bottomMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) }
         }
         drawerContainer.addView(calcResultBanner)
 
@@ -687,24 +596,17 @@ class MainActivity : Activity(), SensorEventListener {
         rootStack.addView(homeContainer)
         rootStack.addView(drawerContainer)
 
-        // Home Gestures: Swipe Up -> Drawer, Swipe Down -> Notification Shade, Double-Tap -> Cycle Clock Face
         val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (e1 == null || isDrawerOpen) return false
                 val dy = e2.y - e1.y
                 val dx = e2.x - e1.x
                 if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > dp(55)) {
-                    if (dy < 0) {
-                        openDrawer(focusKeyboard = false)
-                        return true
-                    } else {
-                        expandNotificationShade()
-                        return true
-                    }
+                    if (dy < 0) { openDrawer(focusKeyboard = false); return true }
+                    else { expandNotificationShade(); return true }
                 }
                 return false
             }
-
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 vibrateTick(true)
                 clockFaceMode = (clockFaceMode + 1) % 4
@@ -713,11 +615,7 @@ class MainActivity : Activity(), SensorEventListener {
             }
         })
 
-        homeContainer.setOnTouchListener { _, ev ->
-            gestureDetector.onTouchEvent(ev)
-            false
-        }
-
+        homeContainer.setOnTouchListener { _, ev -> gestureDetector.onTouchEvent(ev); false }
         setContentView(rootStack)
     }
 
@@ -725,9 +623,8 @@ class MainActivity : Activity(), SensorEventListener {
         widgetsGrid.removeAllViews()
         val totalWidth = resources.displayMetrics.widthPixels - dp(32)
         val unitW = totalWidth / 3
-
-        // 1. Weather Widget (1x1 or 2x1 Resizable on Long Press)
         val wSpan = if (widgetSizeSpan == 2) 2 else 1
+
         val weatherCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = roundRect(COLOR_CARD, dp(18), COLOR_STROKE)
@@ -738,10 +635,7 @@ class MainActivity : Activity(), SensorEventListener {
                 columnSpec = GridLayout.spec(GridLayout.UNDEFINED, wSpan)
                 setMargins(dp(3), 0, dp(3), 0)
             }
-            setOnClickListener {
-                vibrateTick(false)
-                promptConfigureWeather()
-            }
+            setOnClickListener { vibrateTick(false); promptConfigureWeather() }
             setOnLongClickListener {
                 vibrateTick(true)
                 widgetSizeSpan = if (widgetSizeSpan == 1) 2 else 1
@@ -770,7 +664,6 @@ class MainActivity : Activity(), SensorEventListener {
         weatherCard.addView(wTitle)
         weatherCard.addView(weatherWidgetText)
 
-        // 2. Pedometer Step-Counter Widget
         val pedCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = roundRect(COLOR_CARD, dp(18), COLOR_STROKE)
@@ -782,7 +675,7 @@ class MainActivity : Activity(), SensorEventListener {
             }
             setOnClickListener {
                 vibrateTick(false)
-                dailySteps += 250 // Manual step calibration increment if sensor paused
+                dailySteps += 250
                 saveState()
                 updatePedometerUI()
             }
@@ -796,9 +689,7 @@ class MainActivity : Activity(), SensorEventListener {
             maxLines = 1
         }
         pedometerBar = DotProgressBarView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12)).apply {
-                topMargin = dp(6)
-            }
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(12)).apply { topMargin = dp(6) }
         }
         pedCard.addView(pedometerWidgetText)
         pedCard.addView(pedometerBar)
@@ -806,7 +697,6 @@ class MainActivity : Activity(), SensorEventListener {
         widgetsGrid.addView(weatherCard)
         widgetsGrid.addView(pedCard)
 
-        // 3. Screen-Time Widget (Shown when Weather is 1x1)
         screenTimeWidgetText = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 11f
@@ -824,10 +714,7 @@ class MainActivity : Activity(), SensorEventListener {
                     height = dp(58)
                     setMargins(dp(3), 0, dp(3), 0)
                 }
-                setOnClickListener {
-                    vibrateTick(false)
-                    showBackgroundAppDashboard()
-                }
+                setOnClickListener { vibrateTick(false); showBackgroundAppDashboard() }
             }
             val stTitle = TextView(this).apply {
                 text = "SCREEN TIME"
@@ -847,21 +734,15 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun promptConfigureWeather() {
-        val input = EditText(this).apply {
-            setText(weatherCity)
-            setTextColor(COLOR_WHITE)
-        }
+        val input = EditText(this).apply { setText(weatherCity); setTextColor(COLOR_WHITE) }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("WEATHER WIDGET // CITY")
             .setMessage("Tip: Long-press the weather widget to resize between 1x1 and 2x1 layouts.")
             .setView(input)
             .setPositiveButton("SAVE") { _, _ ->
                 weatherCity = input.text.toString().trim().uppercase(Locale.getDefault()).ifEmpty { "AHMEDABAD" }
-                saveState()
-                buildResizableOS4Widgets()
-                updateAllWidgets()
-            }
-            .show()
+                saveState(); buildResizableOS4Widgets(); updateAllWidgets()
+            }.show()
     }
 
     private fun showBackgroundAppDashboard() {
@@ -874,35 +755,28 @@ class MainActivity : Activity(), SensorEventListener {
 
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("OS 4.0 // BACKGROUND & RAM OPTIMIZER")
-            .setMessage(
-                "Active System Memory: ${totalMb - availMb} MB / $totalMb MB ($usedPct%)\n" +
-                "Launcher Footprint: ~22 MB\n" +
-                "Screen Time Today: ${getScreenTimeFormatted()}\n\n" +
-                "Select an optimization action:"
-            )
+            .setMessage("Active System Memory: ${totalMb - availMb} MB / $totalMb MB ($usedPct%)\nLauncher Footprint: ~22 MB\nScreen Time Today: ${getScreenTimeFormatted()}")
             .setPositiveButton("TRIM LAUNCHER MEMORY") { _, _ ->
                 System.gc()
                 vibrateTick(true)
-                Toast.makeText(this, "Memory caches trimmed & optimized", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Memory caches trimmed", Toast.LENGTH_SHORT).show()
             }
-            .setNeutralButton("RUNNING SERVICES") { _, _ ->
+            .setNeutralButton("SYSTEM APPS") { _, _ ->
                 try { startActivity(Intent(Settings.ACTION_APPLICATION_SETTINGS)) } catch (_: Exception) {}
             }
-            .setNegativeButton("CLOSE", null)
-            .show()
+            .setNegativeButton("CLOSE", null).show()
     }
 
     private fun showLauncherSettingsDialog() {
         val items = arrayOf(
             "Extra Dark Mode: ${if (isExtraDark) "PITCH BLACK (#000)" else "GRAPHITE (#0D0E11)"}",
             "Home Grid Columns: ${gridColumns}x${gridColumns}",
-            "Widget Layout Size: ${if (widgetSizeSpan == 1) "1x1 Compact (3 Widgets)" else "2x1 Expanded"}",
+            "Widget Layout Size: ${if (widgetSizeSpan == 1) "1x1 Compact" else "2x1 Expanded"}",
             "Search Scope Includes Hidden Apps: ${if (includeHiddenInSearch) "YES" else "NO"}",
             "Change System Wallpaper",
             "Background App & RAM Dashboard",
             "Unhide All Hidden Apps (${hiddenPkgs.size})"
         )
-
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("KINETIC OS 4.0 // HOME SETTINGS")
             .setItems(items) { _, idx ->
@@ -911,26 +785,15 @@ class MainActivity : Activity(), SensorEventListener {
                     1 -> { gridColumns = if (gridColumns == 4) 5 else 4; saveState(); rebuildUI() }
                     2 -> { widgetSizeSpan = if (widgetSizeSpan == 1) 2 else 1; saveState(); rebuildUI() }
                     3 -> { includeHiddenInSearch = !includeHiddenInSearch; saveState(); rebuildUI() }
-                    4 -> {
-                        try { startActivity(Intent(Intent.ACTION_SET_WALLPAPER)) } catch (_: Exception) {}
-                    }
+                    4 -> { try { startActivity(Intent(Intent.ACTION_SET_WALLPAPER)) } catch (_: Exception) {} }
                     5 -> showBackgroundAppDashboard()
-                    6 -> {
-                        hiddenPkgs.clear()
-                        saveState()
-                        rebuildUI()
-                    }
+                    6 -> { hiddenPkgs.clear(); saveState(); rebuildUI() }
                 }
-            }
-            .show()
+            }.show()
     }
 
     private fun rebuildUI() {
-        buildUserInterface()
-        updateAllWidgets()
-        renderFoldersBar()
-        renderHomeFavorites()
-        renderAppDrawer(searchInput.text.toString())
+        buildUserInterface(); updateAllWidgets(); renderFoldersBar(); renderHomeFavorites(); renderAppDrawer(searchInput.text.toString())
     }
 
     private fun updateDrawerTabStyles() {
@@ -946,10 +809,8 @@ class MainActivity : Activity(), SensorEventListener {
         val pinInput = EditText(this).apply {
             hint = if (savedPin == null) "CREATE 4-DIGIT PIN" else "ENTER 4-DIGIT PIN"
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
-            setTextColor(COLOR_WHITE)
-            setHintTextColor(COLOR_MUTED)
+            setTextColor(COLOR_WHITE); setHintTextColor(COLOR_MUTED)
         }
-
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("PRIVATE SPACE // AUTHENTICATION")
             .setView(pinInput)
@@ -957,46 +818,29 @@ class MainActivity : Activity(), SensorEventListener {
                 val entered = pinInput.text.toString().trim()
                 if (savedPin == null && entered.length >= 4) {
                     prefs.edit().putString("private_pin", entered).apply()
-                    drawerViewTab = 2
-                    updateDrawerTabStyles()
-                    renderAppDrawer("")
+                    drawerViewTab = 2; updateDrawerTabStyles(); renderAppDrawer("")
                 } else if (entered == savedPin) {
-                    vibrateTick(true)
-                    drawerViewTab = 2
-                    updateDrawerTabStyles()
-                    renderAppDrawer("")
+                    vibrateTick(true); drawerViewTab = 2; updateDrawerTabStyles(); renderAppDrawer("")
                 } else {
                     Toast.makeText(this, "Invalid PIN", Toast.LENGTH_SHORT).show()
                 }
-            }
-            .setNegativeButton("CANCEL", null)
-            .show()
+            }.setNegativeButton("CANCEL", null).show()
     }
 
     private fun createQuickTile(label: String, active: Boolean, onTap: () -> Unit): TextView {
         return TextView(this).apply {
-            text = label
-            typeface = Typeface.MONOSPACE
-            textSize = 9f
-            setTextColor(COLOR_WHITE)
-            gravity = Gravity.CENTER
+            text = label; typeface = Typeface.MONOSPACE; textSize = 9f; setTextColor(COLOR_WHITE); gravity = Gravity.CENTER
             background = roundRect(if (active) COLOR_RED else COLOR_CARD, dp(16), COLOR_STROKE)
-            setOnClickListener {
-                vibrateTick(false)
-                onTap()
-            }
+            setOnClickListener { vibrateTick(false); onTap() }
         }
     }
 
     private fun loadInstalledAppsAsync() {
         bgExecutor.execute {
             val pm = packageManager
-            val mainIntent = Intent(Intent.ACTION_MAIN, null).apply {
-                addCategory(Intent.CATEGORY_LAUNCHER)
-            }
+            val mainIntent = Intent(Intent.ACTION_MAIN, null).apply { addCategory(Intent.CATEGORY_LAUNCHER) }
             val resolveList = pm.queryIntentActivities(mainIntent, 0)
             val loaded = mutableListOf<AppEntry>()
-
             for (ri in resolveList) {
                 val pkg = ri.activityInfo.packageName
                 if (pkg == packageName) continue
@@ -1006,22 +850,15 @@ class MainActivity : Activity(), SensorEventListener {
                 val cat = classifyCategory(ri.activityInfo.applicationInfo, defaultLabel)
                 loaded.add(AppEntry(defaultLabel, customLabel, pkg, ri.activityInfo.name, icon, cat))
             }
-
             loaded.sortBy { it.customLabel.lowercase(Locale.getDefault()) }
-
             mainHandler.post {
-                allApps.clear()
-                allApps.addAll(loaded)
-
+                allApps.clear(); allApps.addAll(loaded)
                 if (favoritePkgs.isEmpty() && allApps.isNotEmpty()) {
                     allApps.take(6).forEach { favoritePkgs.add(it.pkg) }
                     maxIconPkgs.add(favoritePkgs.first())
                     saveState()
                 }
-
-                renderFoldersBar()
-                renderHomeFavorites()
-                renderAppDrawer(searchInput.text.toString())
+                renderFoldersBar(); renderHomeFavorites(); renderAppDrawer(searchInput.text.toString())
             }
         }
     }
@@ -1031,11 +868,8 @@ class MainActivity : Activity(), SensorEventListener {
             when (appInfo.category) {
                 ApplicationInfo.CATEGORY_GAME -> return "[ GAMES ]"
                 ApplicationInfo.CATEGORY_SOCIAL -> return "[ SOCIAL ]"
-                ApplicationInfo.CATEGORY_AUDIO,
-                ApplicationInfo.CATEGORY_VIDEO,
-                ApplicationInfo.CATEGORY_IMAGE -> return "[ MEDIA ]"
-                ApplicationInfo.CATEGORY_PRODUCTIVITY,
-                ApplicationInfo.CATEGORY_NEWS -> return "[ WORK ]"
+                ApplicationInfo.CATEGORY_AUDIO, ApplicationInfo.CATEGORY_VIDEO, ApplicationInfo.CATEGORY_IMAGE -> return "[ MEDIA ]"
+                ApplicationInfo.CATEGORY_PRODUCTIVITY, ApplicationInfo.CATEGORY_NEWS -> return "[ WORK ]"
             }
         }
         val l = label.lowercase(Locale.getDefault())
@@ -1051,34 +885,19 @@ class MainActivity : Activity(), SensorEventListener {
         for ((folderName, pkgList) in customFolders) {
             val pill = TextView(this).apply {
                 text = ":: $folderName (${pkgList.size})"
-                typeface = Typeface.MONOSPACE
-                textSize = 9.5f
-                setTextColor(COLOR_WHITE)
+                typeface = Typeface.MONOSPACE; textSize = 9.5f; setTextColor(COLOR_WHITE)
                 background = roundRect(COLOR_CARD_ALT, dp(16), COLOR_STROKE)
                 setPadding(dp(12), dp(6), dp(12), dp(6))
-                layoutParams = LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT
-                ).apply { rightMargin = dp(6) }
-                setOnClickListener {
-                    vibrateTick(false)
-                    showFolderPopup(folderName, pkgList)
-                }
+                layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { rightMargin = dp(6) }
+                setOnClickListener { vibrateTick(false); showFolderPopup(folderName, pkgList) }
             }
             foldersRowLayout.addView(pill)
         }
-
         val addFolderBtn = TextView(this).apply {
-            text = "+ FOLDER"
-            typeface = Typeface.MONOSPACE
-            textSize = 9.5f
-            setTextColor(COLOR_RED)
+            text = "+ FOLDER"; typeface = Typeface.MONOSPACE; textSize = 9.5f; setTextColor(COLOR_RED)
             background = roundRect(COLOR_CARD, dp(16), COLOR_STROKE)
             setPadding(dp(12), dp(6), dp(12), dp(6))
-            setOnClickListener {
-                vibrateTick(false)
-                promptCreateFolder()
-            }
+            setOnClickListener { vibrateTick(false); promptCreateFolder() }
         }
         foldersRowLayout.addView(addFolderBtn)
     }
@@ -1093,41 +912,22 @@ class MainActivity : Activity(), SensorEventListener {
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("FOLDER // $folderName")
             .setItems(names) { _, idx -> launchApp(folderApps[idx], false) }
-            .setNegativeButton("Delete Folder") { _, _ ->
-                customFolders.remove(folderName)
-                saveState()
-                renderFoldersBar()
-            }
-            .setNeutralButton("Close", null)
-            .show()
+            .setNegativeButton("Delete Folder") { _, _ -> customFolders.remove(folderName); saveState(); renderFoldersBar() }
+            .setNeutralButton("Close", null).show()
     }
 
     private fun promptCreateFolder() {
-        val input = EditText(this).apply {
-            hint = "FOLDER NAME"
-            setTextColor(COLOR_WHITE)
-            setHintTextColor(COLOR_MUTED)
-        }
+        val input = EditText(this).apply { hint = "FOLDER NAME"; setTextColor(COLOR_WHITE); setHintTextColor(COLOR_MUTED) }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("NEW FOLDER")
-            .setView(input)
+            .setTitle("NEW FOLDER").setView(input)
             .setPositiveButton("CREATE") { _, _ ->
                 val name = input.text.toString().trim().uppercase(Locale.getDefault())
-                if (name.isNotEmpty()) {
-                    customFolders[name] = mutableListOf()
-                    saveState()
-                    renderFoldersBar()
-                }
-            }
-            .setNegativeButton("CANCEL", null)
-            .show()
+                if (name.isNotEmpty()) { customFolders[name] = mutableListOf(); saveState(); renderFoldersBar() }
+            }.setNegativeButton("CANCEL", null).show()
     }
 
     private fun renderHomeFavorites() {
-        favGridLayout.removeAllViews()
-        favGridLayout.columnCount = gridColumns
-        dockLayout.removeAllViews()
-
+        favGridLayout.removeAllViews(); favGridLayout.columnCount = gridColumns; dockLayout.removeAllViews()
         val favApps = favoritePkgs.mapNotNull { pkg -> allApps.find { it.pkg == pkg } }
         val screenWidth = resources.displayMetrics.widthPixels - dp(32)
         val cellSize = screenWidth / gridColumns
@@ -1135,51 +935,32 @@ class MainActivity : Activity(), SensorEventListener {
         for (app in favApps) {
             val isMax = maxIconPkgs.contains(app.pkg)
             val span = if (isMax) 2 else 1
-
             val card = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
+                orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER
                 background = roundRect(COLOR_CARD, dp(20), if (isMax) COLOR_RED else COLOR_STROKE)
                 setPadding(dp(4), dp(6), dp(4), dp(6))
-
-                val params = GridLayout.LayoutParams().apply {
+                layoutParams = GridLayout.LayoutParams().apply {
                     width = cellSize * span - dp(8)
                     height = if (isMax) cellSize * 2 - dp(12) else cellSize + dp(2)
                     columnSpec = GridLayout.spec(GridLayout.UNDEFINED, span)
                     rowSpec = GridLayout.spec(GridLayout.UNDEFINED, span)
                     setMargins(dp(4), dp(4), dp(4), dp(4))
                 }
-                layoutParams = params
-
                 setOnClickListener { launchApp(app, false) }
-                setOnLongClickListener {
-                    vibrateTick(true)
-                    showAppOptionsDialog(app, isPinned = true)
-                    true
-                }
+                setOnLongClickListener { vibrateTick(true); showAppOptionsDialog(app, isPinned = true); true }
             }
-
             val iconView = ImageView(this).apply {
                 setImageDrawable(app.icon.constantState?.newDrawable()?.mutate() ?: app.icon)
                 colorFilter = if (isMonoIcons) monoFilter else null
                 val s = if (isMax) dp(64) else dp(38)
                 layoutParams = LinearLayout.LayoutParams(s, s)
             }
-
             val lblView = TextView(this).apply {
                 text = app.customLabel.uppercase(Locale.getDefault())
-                typeface = Typeface.MONOSPACE
-                textSize = if (isMax) 11f else 8.5f
-                setTextColor(COLOR_WHITE)
-                maxLines = 1
-                ellipsize = TextUtils.TruncateAt.END
-                gravity = Gravity.CENTER
-                setPadding(0, dp(4), 0, 0)
+                typeface = Typeface.MONOSPACE; textSize = if (isMax) 11f else 8.5f; setTextColor(COLOR_WHITE)
+                maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0)
             }
-
-            card.addView(iconView)
-            card.addView(lblView)
-            favGridLayout.addView(card)
+            card.addView(iconView); card.addView(lblView); favGridLayout.addView(card)
         }
 
         for (app in favApps.take(4)) {
@@ -1192,13 +973,8 @@ class MainActivity : Activity(), SensorEventListener {
             }
             dockLayout.addView(dockIcon)
         }
-
         val drawerBtn = TextView(this).apply {
-            text = ":::"
-            typeface = Typeface.MONOSPACE
-            textSize = 18f
-            setTextColor(COLOR_RED)
-            gravity = Gravity.CENTER
+            text = ":::"; typeface = Typeface.MONOSPACE; textSize = 18f; setTextColor(COLOR_RED); gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(0, dp(46), 1f)
             setOnClickListener { openDrawer(focusKeyboard = false) }
         }
@@ -1206,24 +982,14 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun evaluateMathOrSearch(query: String) {
-        if (query.isEmpty()) {
-            calcResultBanner.visibility = View.GONE
-            return
-        }
+        if (query.isEmpty()) { calcResultBanner.visibility = View.GONE; return }
         val mathRegex = Regex("""^\s*(-?\d+(?:\.\d+)?)\s*([+\-*/%])\s*(-?\d+(?:\.\d+)?)\s*$""")
         val match = mathRegex.matchEntire(query)
         if (match != null) {
             val a = match.groupValues[1].toDoubleOrNull() ?: 0.0
             val op = match.groupValues[2]
             val b = match.groupValues[3].toDoubleOrNull() ?: 0.0
-            val res = when (op) {
-                "+" -> a + b
-                "-" -> a - b
-                "*" -> a * b
-                "/" -> if (b != 0.0) a / b else Double.NaN
-                "%" -> a % b
-                else -> 0.0
-            }
+            val res = when (op) { "+" -> a + b; "-" -> a - b; "*" -> a * b; "/" -> if (b != 0.0) a / b else Double.NaN; "%" -> a % b; else -> 0.0 }
             val formatted = if (res % 1.0 == 0.0) res.toLong().toString() else String.format(Locale.US, "%.2f", res)
             calcResultBanner.text = "INSTANT CALC // = $formatted  (TAP TO COPY)"
             calcResultBanner.visibility = View.VISIBLE
@@ -1236,8 +1002,7 @@ class MainActivity : Activity(), SensorEventListener {
             calcResultBanner.text = "WEB SEARCH // TAP TO SEARCH \"$query\""
             calcResultBanner.visibility = View.VISIBLE
             calcResultBanner.setOnClickListener {
-                val uri = Uri.parse("https://www.google.com/search?q=" + Uri.encode(query))
-                startActivity(Intent(Intent.ACTION_VIEW, uri))
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + Uri.encode(query))))
                 closeDrawer()
             }
         }
@@ -1248,78 +1013,40 @@ class MainActivity : Activity(), SensorEventListener {
         val baseList = when (drawerViewTab) {
             1 -> allApps.filter { hiddenPkgs.contains(it.pkg) }
             2 -> allApps.filter { privatePkgs.contains(it.pkg) }
-            else -> allApps.filter { app ->
-                !privatePkgs.contains(app.pkg) &&
-                    (!hiddenPkgs.contains(app.pkg) || (clean.isNotEmpty() && includeHiddenInSearch))
-            }
+            else -> allApps.filter { app -> !privatePkgs.contains(app.pkg) && (!hiddenPkgs.contains(app.pkg) || (clean.isNotEmpty() && includeHiddenInSearch)) }
         }
-
-        val filtered = baseList.filter { app ->
-            clean.isEmpty() || app.customLabel.lowercase(Locale.getDefault()).contains(clean)
-        }.let { list ->
-            if (drawerViewTab == 0 && isSmartDrawer && clean.isEmpty()) {
-                list.sortedWith(compareBy({ it.category }, { it.customLabel.lowercase(Locale.getDefault()) }))
-            } else list
+        val filtered = baseList.filter { app -> clean.isEmpty() || app.customLabel.lowercase(Locale.getDefault()).contains(clean) }.let { list ->
+            if (drawerViewTab == 0 && isSmartDrawer && clean.isEmpty()) list.sortedWith(compareBy({ it.category }, { it.customLabel.lowercase(Locale.getDefault()) })) else list
         }
-
         if (autoLaunchIfSingle && filtered.size == 1) {
-            searchInput.setText("")
-            closeDrawer()
-            launchApp(filtered.first(), false)
-            return
+            searchInput.setText(""); closeDrawer(); launchApp(filtered.first(), false); return
         }
-
         appsGridView.numColumns = gridColumns
         appsGridView.adapter = object : BaseAdapter() {
             override fun getCount(): Int = filtered.size
             override fun getItem(position: Int): Any = filtered[position]
             override fun getItemId(position: Int): Long = position.toLong()
-
             override fun getView(position: Int, convertView: View?, parent: ViewGroup?): View {
                 val app = filtered[position]
                 val cell = LinearLayout(this@MainActivity).apply {
-                    orientation = LinearLayout.VERTICAL
-                    gravity = Gravity.CENTER
-                    setPadding(dp(4), dp(8), dp(4), dp(8))
+                    orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; setPadding(dp(4), dp(8), dp(4), dp(8))
                     background = roundRect(COLOR_CARD, dp(16), COLOR_STROKE)
                 }
-
                 if (drawerViewTab == 0 && isSmartDrawer && clean.isEmpty()) {
-                    val badge = TextView(this@MainActivity).apply {
-                        text = app.category
-                        typeface = Typeface.MONOSPACE
-                        textSize = 7f
-                        setTextColor(COLOR_RED)
-                        maxLines = 1
-                    }
-                    cell.addView(badge)
+                    cell.addView(TextView(this@MainActivity).apply { text = app.category; typeface = Typeface.MONOSPACE; textSize = 7f; setTextColor(COLOR_RED); maxLines = 1 })
                 }
-
                 val img = ImageView(this@MainActivity).apply {
                     setImageDrawable(app.icon.constantState?.newDrawable()?.mutate() ?: app.icon)
                     colorFilter = if (isMonoIcons) monoFilter else null
                     layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { topMargin = dp(4) }
                 }
-
                 val lbl = TextView(this@MainActivity).apply {
-                    text = app.customLabel
-                    typeface = Typeface.MONOSPACE
-                    textSize = 9f
-                    setTextColor(COLOR_WHITE)
-                    maxLines = 1
-                    ellipsize = TextUtils.TruncateAt.END
-                    gravity = Gravity.CENTER
-                    setPadding(0, dp(4), 0, 0)
+                    text = app.customLabel; typeface = Typeface.MONOSPACE; textSize = 9f; setTextColor(COLOR_WHITE)
+                    maxLines = 1; ellipsize = TextUtils.TruncateAt.END; gravity = Gravity.CENTER; setPadding(0, dp(4), 0, 0)
                 }
-
-                cell.addView(img)
-                cell.addView(lbl)
+                cell.addView(img); cell.addView(lbl)
                 cell.setOnClickListener { launchApp(app, false) }
-                cell.setOnLongClickListener {
-                    vibrateTick(true)
-                    showAppOptionsDialog(app, isPinned = favoritePkgs.contains(app.pkg))
-                    true
-                }
+                cell.setOnLongClickListener { vibrateTick(true); showAppOptionsDialog(app, isPinned = favoritePkgs.contains(app.pkg)); true }
                 return cell
             }
         }
@@ -1343,9 +1070,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         options.add("Launch in Pop-Up / Multi-Window View")
         options.add("Rename App Label")
-        for (folderName in customFolders.keys) {
-            options.add("Add to Folder: $folderName")
-        }
+        for (folderName in customFolders.keys) options.add("Add to Folder: $folderName")
         options.add(if (isHidden) "Unhide from Hidden Icons" else "Hide App Icon (Move to Hidden)")
         options.add(if (isPrivate) "Remove from Private Space" else "Move to PIN Private Space 🔒")
         options.add(if (isMindful) "Disable 3-Sec Mindful Delay" else "Enable 3-Sec Mindful Delay")
@@ -1367,92 +1092,51 @@ class MainActivity : Activity(), SensorEventListener {
                         val idx = favoritePkgs.indexOf(app.pkg)
                         if (idx in 0 until favoritePkgs.size - 1) Collections.swap(favoritePkgs, idx, idx + 1)
                     }
-                    choice.startsWith("Unpin") -> {
-                        favoritePkgs.remove(app.pkg)
-                        maxIconPkgs.remove(app.pkg)
-                    }
-                    choice == "Pin to Home Screen" -> {
-                        if (!favoritePkgs.contains(app.pkg)) favoritePkgs.add(app.pkg)
-                    }
-                    choice == "Pin as 2x2 Max Icon" -> {
-                        if (!favoritePkgs.contains(app.pkg)) favoritePkgs.add(app.pkg)
-                        maxIconPkgs.add(app.pkg)
-                    }
-                    choice.startsWith("Launch in Pop-Up") -> {
-                        launchApp(app, popUpWindow = true)
-                        return@setItems
-                    }
-                    choice == "Rename App Label" -> {
-                        promptRenameApp(app)
-                        return@setItems
-                    }
+                    choice.startsWith("Unpin") -> { favoritePkgs.remove(app.pkg); maxIconPkgs.remove(app.pkg) }
+                    choice == "Pin to Home Screen" -> if (!favoritePkgs.contains(app.pkg)) favoritePkgs.add(app.pkg)
+                    choice == "Pin as 2x2 Max Icon" -> { if (!favoritePkgs.contains(app.pkg)) favoritePkgs.add(app.pkg); maxIconPkgs.add(app.pkg) }
+                    choice.startsWith("Launch in Pop-Up") -> { launchApp(app, popUpWindow = true); return@setItems }
+                    choice == "Rename App Label" -> { promptRenameApp(app); return@setItems }
                     choice.startsWith("Add to Folder: ") -> {
                         val fName = choice.removePrefix("Add to Folder: ")
                         val list = customFolders[fName]
                         if (list != null && !list.contains(app.pkg)) list.add(app.pkg)
                         renderFoldersBar()
                     }
-                    choice.startsWith("Hide App") -> {
-                        hiddenPkgs.add(app.pkg)
-                        favoritePkgs.remove(app.pkg)
-                    }
+                    choice.startsWith("Hide App") -> { hiddenPkgs.add(app.pkg); favoritePkgs.remove(app.pkg) }
                     choice.startsWith("Unhide") -> hiddenPkgs.remove(app.pkg)
-                    choice.startsWith("Move to PIN Private") -> {
-                        privatePkgs.add(app.pkg)
-                        favoritePkgs.remove(app.pkg)
-                    }
+                    choice.startsWith("Move to PIN Private") -> { privatePkgs.add(app.pkg); favoritePkgs.remove(app.pkg) }
                     choice.startsWith("Remove from Private") -> privatePkgs.remove(app.pkg)
                     choice.startsWith("Enable 3-Sec") -> mindfulPkgs.add(app.pkg)
                     choice.startsWith("Disable 3-Sec") -> mindfulPkgs.remove(app.pkg)
-                    choice == "System App Info" -> {
-                        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                            data = Uri.fromParts("package", app.pkg, null)
-                        })
-                    }
-                    choice == "Uninstall App" -> {
-                        startActivity(Intent(Intent.ACTION_DELETE).apply {
-                            data = Uri.fromParts("package", app.pkg, null)
-                        })
-                    }
+                    choice == "System App Info" -> startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply { data = Uri.fromParts("package", app.pkg, null) })
+                    choice == "Uninstall App" -> startActivity(Intent(Intent.ACTION_DELETE).apply { data = Uri.fromParts("package", app.pkg, null) })
                 }
-                saveState()
-                updateDrawerTabStyles()
-                renderHomeFavorites()
-                renderAppDrawer(searchInput.text.toString())
-            }
-            .show()
+                saveState(); updateDrawerTabStyles(); renderHomeFavorites(); renderAppDrawer(searchInput.text.toString())
+            }.show()
     }
 
     private fun promptRenameApp(app: AppEntry) {
-        val input = EditText(this).apply {
-            setText(app.customLabel)
-            setTextColor(COLOR_WHITE)
-        }
+        val input = EditText(this).apply { setText(app.customLabel); setTextColor(COLOR_WHITE) }
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("RENAME // ${app.defaultLabel}")
-            .setView(input)
+            .setTitle("RENAME // ${app.defaultLabel}").setView(input)
             .setPositiveButton("SAVE") { _, _ ->
                 val newName = input.text.toString().trim().ifEmpty { app.defaultLabel }
                 app.customLabel = newName
                 prefs.edit().putString("rename_${app.pkg}", newName).apply()
-                renderHomeFavorites()
-                renderAppDrawer(searchInput.text.toString())
+                renderHomeFavorites(); renderAppDrawer(searchInput.text.toString())
             }
             .setNeutralButton("RESET") { _, _ ->
                 app.customLabel = app.defaultLabel
                 prefs.edit().remove("rename_${app.pkg}").apply()
-                renderHomeFavorites()
-                renderAppDrawer(searchInput.text.toString())
-            }
-            .show()
+                renderHomeFavorites(); renderAppDrawer(searchInput.text.toString())
+            }.show()
     }
 
     private fun getScreenTimeFormatted(): String {
         val sessionMin = ((SystemClock.elapsedRealtime() - sessionStartMs) / 60000L).toInt()
         val total = accumulatedUsageMin + sessionMin
-        val hrs = total / 60
-        val mins = total % 60
-        return "${hrs}H ${mins}M"
+        return "${total / 60}H ${total % 60}M"
     }
 
     private fun updateAllWidgets() {
@@ -1463,37 +1147,30 @@ class MainActivity : Activity(), SensorEventListener {
 
         when (clockFaceMode) {
             0 -> {
-                val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
-                val dateStr = SimpleDateFormat("EEE, dd MMM", Locale.getDefault()).format(now).uppercase(Locale.getDefault())
-                dotMatrixHeader.setDotText(timeStr)
+                dotMatrixHeader.setDotText(SimpleDateFormat("HH:mm", Locale.getDefault()).format(now))
                 faceBadgeText.text = "OS 4.0 // CFG"
-                telemetrySubText.text = "$dateStr  //  BAT $level%  //  $tempC°C  //  120HZ"
+                telemetrySubText.text = "${SimpleDateFormat("EEE, dd MMM", Locale.getDefault()).format(now).uppercase(Locale.getDefault())}  //  BAT $level%  //  $tempC°C  //  120HZ"
             }
             1 -> {
-                val utcFmt = SimpleDateFormat("HH:mm", Locale.getDefault()).apply {
-                    timeZone = TimeZone.getTimeZone("UTC")
-                }
+                val utcFmt = SimpleDateFormat("HH:mm", Locale.getDefault()).apply { timeZone = TimeZone.getTimeZone("UTC") }
                 dotMatrixHeader.setDotText(utcFmt.format(now))
                 faceBadgeText.text = "UTC // DUAL"
                 telemetrySubText.text = "WORLD UTC TIME  //  IST +5:30  //  BAT $level%"
             }
             2 -> {
-                val lockFmt = SimpleDateFormat("hh.mm", Locale.getDefault()).format(now)
-                dotMatrixHeader.setDotText(lockFmt)
+                dotMatrixHeader.setDotText(SimpleDateFormat("hh.mm", Locale.getDefault()).format(now))
                 faceBadgeText.text = "LOCK // 12H"
                 telemetrySubText.text = "MINIMAL LOCK CLOCK  //  TAP FOR CIVI RAM"
             }
             3 -> {
                 val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                val mem = ActivityManager.MemoryInfo()
-                am.getMemoryInfo(mem)
+                val mem = ActivityManager.MemoryInfo(); am.getMemoryInfo(mem)
                 val availGb = String.format(Locale.US, "%.1f", mem.availMem / (1024.0 * 1024.0 * 1024.0))
                 dotMatrixHeader.setDotText("$level:$tempC".take(5))
                 faceBadgeText.text = "CIVI // RAM"
-                telemetrySubText.text = "FREE RAM: ${availGb}GB  //  CPU CORES: ${Runtime.getRuntime().availableProcessors()}  //  $tempC°C"
+                telemetrySubText.text = "FREE RAM: ${availGb}GB  //  CORES: ${Runtime.getRuntime().availableProcessors()}  //  $tempC°C"
             }
         }
-
         weatherWidgetText.text = "${tempC.toInt()}°C $weatherCond"
         screenTimeWidgetText.text = getScreenTimeFormatted()
         updatePedometerUI()
@@ -1512,15 +1189,12 @@ class MainActivity : Activity(), SensorEventListener {
                     if (!glyphRunning) return
                     if (glyphSecondsLeft > 0) {
                         glyphSecondsLeft--
-                        val progress = 1f - (glyphSecondsLeft / (25f * 60f))
-                        glyphProgressView.setProgress(progress)
+                        glyphProgressView.setProgress(1f - (glyphSecondsLeft / (25f * 60f)))
                         glyphStatusText.text = "GLYPH LIVE // ${formatSec(glyphSecondsLeft)}"
                         mainHandler.postDelayed(this, 1000L)
                     } else {
-                        glyphRunning = false
-                        vibrateTick(true)
-                        glyphStatusText.text = "COMPLETE // TAP TO START"
-                        glyphSecondsLeft = 25 * 60
+                        glyphRunning = false; vibrateTick(true)
+                        glyphStatusText.text = "COMPLETE // TAP TO START"; glyphSecondsLeft = 25 * 60
                     }
                 }
             }
@@ -1529,12 +1203,8 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun resetGlyphTimer() {
-        vibrateTick(true)
-        glyphRunning = false
-        glyphRunnable?.let { mainHandler.removeCallbacks(it) }
-        glyphSecondsLeft = 25 * 60
-        glyphProgressView.setProgress(0f)
-        glyphStatusText.text = "GLYPH LIVE // 25:00"
+        vibrateTick(true); glyphRunning = false; glyphRunnable?.let { mainHandler.removeCallbacks(it) }
+        glyphSecondsLeft = 25 * 60; glyphProgressView.setProgress(0f); glyphStatusText.text = "GLYPH LIVE // 25:00"
     }
 
     private fun formatSec(sec: Int): String = String.format(Locale.US, "%02d:%02d", sec / 60, sec % 60)
@@ -1550,67 +1220,41 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun getRingerLabel(): String {
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        return when (am.ringerMode) {
-            AudioManager.RINGER_MODE_SILENT -> "RING: MUTE"
-            AudioManager.RINGER_MODE_VIBRATE -> "RING: VIB"
-            else -> "RING: LOUD"
-        }
+        return when (am.ringerMode) { AudioManager.RINGER_MODE_SILENT -> "RING: MUTE"; AudioManager.RINGER_MODE_VIBRATE -> "RING: VIB"; else -> "RING: LOUD" }
     }
 
     private fun cycleRingerMode() {
         try {
             val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            am.ringerMode = when (am.ringerMode) {
-                AudioManager.RINGER_MODE_NORMAL -> AudioManager.RINGER_MODE_VIBRATE
-                AudioManager.RINGER_MODE_VIBRATE -> AudioManager.RINGER_MODE_NORMAL
-                else -> AudioManager.RINGER_MODE_NORMAL
-            }
-            ringerTileBtn.text = getRingerLabel()
-            vibrateTick(true)
-        } catch (_: Exception) {
-            startActivity(Intent(Settings.ACTION_SOUND_SETTINGS))
-        }
+            am.ringerMode = if (am.ringerMode == AudioManager.RINGER_MODE_NORMAL) AudioManager.RINGER_MODE_VIBRATE else AudioManager.RINGER_MODE_NORMAL
+            ringerTileBtn.text = getRingerLabel(); vibrateTick(true)
+        } catch (_: Exception) { startActivity(Intent(Settings.ACTION_SOUND_SETTINGS)) }
     }
 
     private fun toggleFlashlight() {
         try {
             val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val id = cm.cameraIdList.firstOrNull() ?: return
-            isTorchOn = !isTorchOn
-            cm.setTorchMode(id, isTorchOn)
+            isTorchOn = !isTorchOn; cm.setTorchMode(id, isTorchOn)
             torchTileBtn.text = if (isTorchOn) "TORCH: ON" else "TORCH"
             torchTileBtn.background = roundRect(if (isTorchOn) COLOR_RED else COLOR_CARD, dp(16), COLOR_STROKE)
         } catch (_: Exception) {}
     }
 
     private fun openDrawer(focusKeyboard: Boolean) {
-        isDrawerOpen = true
-        drawerViewTab = 0
-        updateDrawerTabStyles()
-        drawerContainer.alpha = 0f
-        drawerContainer.translationY = dp(40).toFloat()
-        drawerContainer.visibility = View.VISIBLE
-        drawerContainer.animate()
-            .alpha(1f)
-            .translationY(0f)
-            .setDuration(180L)
-            .setInterpolator(DecelerateInterpolator())
-            .start()
-
+        isDrawerOpen = true; drawerViewTab = 0; updateDrawerTabStyles()
+        drawerContainer.alpha = 0f; drawerContainer.translationY = dp(40).toFloat(); drawerContainer.visibility = View.VISIBLE
+        drawerContainer.animate().alpha(1f).translationY(0f).setDuration(180L).setInterpolator(DecelerateInterpolator()).start()
         if (focusKeyboard) {
             searchInput.requestFocus()
-            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-            imm.showSoftInput(searchInput, InputMethodManager.SHOW_IMPLICIT)
+            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(searchInput, InputMethodManager.SHOW_IMPLICIT)
         }
     }
 
     private fun closeDrawer() {
         isDrawerOpen = false
-        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
-        imm.hideSoftInputFromWindow(searchInput.windowToken, 0)
-        searchInput.setText("")
-        calcResultBanner.visibility = View.GONE
-        drawerContainer.visibility = View.GONE
+        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(searchInput.windowToken, 0)
+        searchInput.setText(""); calcResultBanner.visibility = View.GONE; drawerContainer.visibility = View.GONE
     }
 
     private fun launchApp(app: AppEntry, popUpWindow: Boolean) {
@@ -1618,9 +1262,7 @@ class MainActivity : Activity(), SensorEventListener {
         if (mindfulPkgs.contains(app.pkg)) {
             Toast.makeText(this, "MINDFUL DELAY // Opening ${app.customLabel} in 3s...", Toast.LENGTH_SHORT).show()
             mainHandler.postDelayed({ executeLaunchIntent(app, popUpWindow) }, 3000L)
-        } else {
-            executeLaunchIntent(app, popUpWindow)
-        }
+        } else executeLaunchIntent(app, popUpWindow)
     }
 
     private fun executeLaunchIntent(app: AppEntry, popUpWindow: Boolean) {
@@ -1628,106 +1270,73 @@ class MainActivity : Activity(), SensorEventListener {
             val intent = Intent(Intent.ACTION_MAIN).apply {
                 addCategory(Intent.CATEGORY_LAUNCHER)
                 component = ComponentName(app.pkg, app.activityName)
-                flags = if (popUpWindow) {
-                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-                } else {
-                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                }
+                flags = if (popUpWindow) Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                        else Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
             }
-            startActivity(intent)
-            closeDrawer()
+            startActivity(intent); closeDrawer()
         } catch (_: Exception) {}
     }
 
     private fun expandNotificationShade() {
         try {
             val service = getSystemService("statusbar")
-            val clazz = Class.forName("android.app.StatusBarManager")
-            clazz.getMethod("expandNotificationsPanel").invoke(service)
+            Class.forName("android.app.StatusBarManager").getMethod("expandNotificationsPanel").invoke(service)
         } catch (_: Exception) {}
     }
 
     private fun vibrateTick(heavy: Boolean) {
         val vib = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val effect = if (heavy) VibrationEffect.EFFECT_HEAVY_CLICK else VibrationEffect.EFFECT_TICK
-            vib?.vibrate(VibrationEffect.createPredefined(effect))
+            vib?.vibrate(VibrationEffect.createPredefined(if (heavy) VibrationEffect.EFFECT_HEAVY_CLICK else VibrationEffect.EFFECT_TICK))
         }
     }
 
     override fun onResume() {
         super.onResume()
         registerReceiver(tickReceiver, IntentFilter().apply {
-            addAction(Intent.ACTION_TIME_TICK)
-            addAction(Intent.ACTION_TIME_CHANGED)
-            addAction(Intent.ACTION_BATTERY_CHANGED)
+            addAction(Intent.ACTION_TIME_TICK); addAction(Intent.ACTION_TIME_CHANGED); addAction(Intent.ACTION_BATTERY_CHANGED)
         })
-        updateAllWidgets()
-        ringerTileBtn.text = getRingerLabel()
-        loadInstalledAppsAsync()
+        updateAllWidgets(); ringerTileBtn.text = getRingerLabel(); loadInstalledAppsAsync()
     }
 
     override fun onPause() {
         super.onPause()
         val sessionMin = ((SystemClock.elapsedRealtime() - sessionStartMs) / 60000L).toInt()
-        if (sessionMin > 0) {
-            accumulatedUsageMin += sessionMin
-            sessionStartMs = SystemClock.elapsedRealtime()
-            saveState()
-        }
+        if (sessionMin > 0) { accumulatedUsageMin += sessionMin; sessionStartMs = SystemClock.elapsedRealtime(); saveState() }
         try { unregisterReceiver(tickReceiver) } catch (_: Exception) {}
     }
 
     @Deprecated("Launcher Back Handler")
-    override fun onBackPressed() {
-        if (isDrawerOpen) closeDrawer()
-    }
+    override fun onBackPressed() { if (isDrawerOpen) closeDrawer() }
 
-    private fun dp(v: Int): Int =
-        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
+    private fun dp(v: Int): Int = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
 
     private fun roundRect(fill: Int, rad: Int, stroke: Int? = null): GradientDrawable {
         return GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = rad.toFloat()
-            setColor(fill)
+            shape = GradientDrawable.RECTANGLE; cornerRadius = rad.toFloat(); setColor(fill)
             if (stroke != null) setStroke(dp(1), stroke)
         }
     }
 
-    // ================= DOT-MATRIX PROGRESS BAR =================
     class DotProgressBarView(context: Context) : View(context) {
         private var progress = 0f
         private val litPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#D71921") }
         private val dimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2A2A2A") }
-
-        fun setProgress(p: Float) {
-            progress = p.coerceIn(0f, 1f)
-            invalidate()
-        }
-
+        fun setProgress(p: Float) { progress = p.coerceIn(0f, 1f); invalidate() }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val totalDots = 18
-            val spacing = width / totalDots.toFloat()
-            val r = (spacing * 0.34f).coerceAtMost(height * 0.4f)
-            val cy = height / 2f
+            val totalDots = 18; val spacing = width / totalDots.toFloat()
+            val r = (spacing * 0.34f).coerceAtMost(height * 0.4f); val cy = height / 2f
             val activeDots = (progress * totalDots).toInt()
-
-            for (i in 0 until totalDots) {
-                val cx = (i + 0.5f) * spacing
-                canvas.drawCircle(cx, cy, r, if (i <= activeDots && progress > 0f) litPaint else dimPaint)
-            }
+            for (i in 0 until totalDots) canvas.drawCircle((i + 0.5f) * spacing, cy, r, if (i <= activeDots && progress > 0f) litPaint else dimPaint)
         }
     }
 
-    // ================= PROCEDURAL 5x7 DOT-MATRIX RENDERER =================
     class DotMatrixView(context: Context) : View(context) {
         private var currentText = "12:00"
         private val whitePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
         private val redPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#D71921") }
         private val offPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#222222") }
-
         private val glyphs = mapOf(
             '0' to arrayOf("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
             '1' to arrayOf("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
@@ -1742,35 +1351,18 @@ class MainActivity : Activity(), SensorEventListener {
             ':' to arrayOf("000", "010", "010", "000", "010", "010", "000"),
             '.' to arrayOf("00", "00", "00", "00", "00", "11", "11")
         )
-
-        fun setDotText(t: String) {
-            if (currentText != t) {
-                currentText = t
-                invalidate()
-            }
-        }
-
+        fun setDotText(t: String) { if (currentText != t) { currentText = t; invalidate() } }
         override fun onDraw(canvas: Canvas) {
             super.onDraw(canvas)
-            val rows = 7
-            val dotSpacing = height / (rows + 1f)
-            val r = dotSpacing * 0.36f
-            var cursorX = dotSpacing
-
+            val rows = 7; val dotSpacing = height / (rows + 1f); val r = dotSpacing * 0.36f; var cursorX = dotSpacing
             for (ch in currentText) {
                 val matrix = glyphs[ch] ?: continue
                 val cols = matrix[0].length
                 for (row in 0 until rows) {
                     for (col in 0 until cols) {
-                        val cx = cursorX + col * dotSpacing
-                        val cy = (row + 1) * dotSpacing
                         val lit = matrix[row][col] == '1'
-                        val p = when {
-                            !lit -> offPaint
-                            ch == ':' || ch == '.' -> redPaint
-                            else -> whitePaint
-                        }
-                        canvas.drawCircle(cx, cy, r, p)
+                        val p = when { !lit -> offPaint; ch == ':' || ch == '.' -> redPaint; else -> whitePaint }
+                        canvas.drawCircle(cursorX + col * dotSpacing, (row + 1) * dotSpacing, r, p)
                     }
                 }
                 cursorX += (cols + 1.4f) * dotSpacing
