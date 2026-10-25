@@ -2,7 +2,9 @@ name: Build Kinetic OS 4 Civi APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    paths:
+      - '.github/workflows/build.yml'
+      - 'app/src/main/java/com/pratik/nothingcivi/MainActivity.kt'
   workflow_dispatch:
 
 permissions:
@@ -16,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
@@ -29,14 +31,14 @@ jobs:
 
       - name: Compile Signed APK
         run: |
-          gradle assembleDebug --no-build-cache
+          gradle assembleDebug --no-daemon --stacktrace
           cp app/build/outputs/apk/debug/app-debug.apk Kinetic-OS-4.0-Civi.apk
 
       - name: Publish Direct .APK File to GitHub Releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create v4.0 Kinetic-OS-4.0-Civi.apk --title "Kinetic OS 4.0 Civi APK" --notes "Direct installable Kinetic-OS-4.0-Civi.apk (No ZIP extraction needed)" --clobber || gh release upload v4.0 Kinetic-OS-4.0-Civi.apk --clobber
+          gh release create v4.0 Kinetic-OS-4.0-Civi.apk --title "Kinetic OS 4.0 Civi APK" --notes "Direct installable Kinetic-OS-4.0-Civi.apk" || gh release upload v4.0 Kinetic-OS-4.0-Civi.apk --clobber
           gh release upload Launcher Kinetic-OS-4.0-Civi.apk --clobber || true
 
       - name: Upload Ready-to-Install APK Artifact
