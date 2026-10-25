@@ -640,24 +640,19 @@ class MainActivity : Activity(), SensorEventListener {
             return
         }
         val lower = q.lowercase(Locale.getDefault())
-        val mathRegex = Regex("""^\s*(-?\d+(?:\.\d+)?)\s*([+\-*/%])\s*(-?\d+(?:\.\d+)?)\s*$""")
-        val m = mathRegex.matchEntire(q)
+        val mathResult = tryEvaluateSimpleMath(q)
 
         agenticBanner.visibility = View.VISIBLE
         when {
-            m != null -> {
-                val a = m.groupValues[1].toDoubleOrNull() ?: 0.0
-                val op = m.groupValues[2]
-                val b = m.groupValues[3].toDoubleOrNull() ?: 0.0
-                val r = when (op) { "+" -> a + b; "-" -> a - b; "*" -> a * b; "/" -> if (b != 0.0) a / b else 0.0; else -> 0.0 }
-                agenticBanner.text = "SLM MATH // = $r (TAP TO COPY)"
+            mathResult != null -> {
+                agenticBanner.text = "SLM MATH // = $mathResult (TAP TO COPY)"
                 agenticBanner.setOnClickListener {
-                    (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("calc", r.toString()))
-                    Toast.makeText(this, "Copied $r", Toast.LENGTH_SHORT).show()
+                    (getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("calc", mathResult))
+                    Toast.makeText(this, "Copied $mathResult", Toast.LENGTH_SHORT).show()
                 }
             }
             lower.contains("timer") -> {
-                val mins = Regex("""(\d+)""").find(lower)?.value?.toIntOrNull() ?: 15
+                val mins = extractFirstNumber(lower) ?: 15
                 agenticBanner.text = "AGENTIC ACTION // SET SYSTEM TIMER FOR $mins MINS →"
                 agenticBanner.setOnClickListener {
                     triggerHaptic(1)
@@ -674,7 +669,7 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
             lower.contains("split") || lower.contains("upi") -> {
-                val amt = Regex("""(\d+)""").find(lower)?.value?.toIntOrNull() ?: 500
+                val amt = extractFirstNumber(lower) ?: 500
                 agenticBanner.text = "AGENTIC UPI // SPLIT ₹$amt (₹${amt / 2} EACH) → LAUNCH PAY"
                 agenticBanner.setOnClickListener {
                     Toast.makeText(this, "UPI Split Request: ₹${amt / 2} ready", Toast.LENGTH_SHORT).show()
@@ -698,6 +693,41 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             }
         }
+    }
+
+    private fun extractFirstNumber(text: String): Int? {
+        val sb = StringBuilder()
+        for (ch in text) {
+            if (ch.isDigit()) sb.append(ch)
+            else if (sb.isNotEmpty()) break
+        }
+        return if (sb.isNotEmpty()) sb.toString().toIntOrNull() else null
+    }
+
+    private fun tryEvaluateSimpleMath(expr: String): String? {
+        val clean = expr.replace(" ", "")
+        val ops = charArrayOf('+', '-', '*', '/', '%')
+        var opIndex = -1
+        var opChar = ' '
+        for (i in 1 until clean.length) {
+            if (ops.contains(clean[i])) {
+                opIndex = i
+                opChar = clean[i]
+                break
+            }
+        }
+        if (opIndex <= 0 || opIndex >= clean.length - 1) return null
+        val left = clean.substring(0, opIndex).toDoubleOrNull() ?: return null
+        val right = clean.substring(opIndex + 1).toDoubleOrNull() ?: return null
+        val res = when (opChar) {
+            '+' -> left + right
+            '-' -> left - right
+            '*' -> left * right
+            '/' -> if (right != 0.0) left / right else return null
+            '%' -> if (right != 0.0) left % right else return null
+            else -> return null
+        }
+        return if (res % 1.0 == 0.0) res.toLong().toString() else String.format(Locale.US, "%.2f", res)
     }
 
     private fun loadAppsAsync() {
