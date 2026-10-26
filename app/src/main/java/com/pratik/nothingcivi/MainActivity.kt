@@ -111,6 +111,7 @@ class MainActivity : Activity(), SensorEventListener {
     private var isTorchOn = false
     private var isDrawerOpen = false
     private var isSleepOverlayActive = false
+    private var isUiBuilt = false
     private var drawerTab = 0 // 0=A-Z, 1=Smart Arrange Hubs, 2=Ghost Shelf (>30d), 3=Vault (Real/Decoy)
     private var activeVaultMode = 0
 
@@ -182,50 +183,69 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences("kinetic_os4_master", Context.MODE_PRIVATE)
+        prefs = getSharedPreferences("kinetic_os4_civi_v8", Context.MODE_PRIVATE)
         loadState()
+
+        // 1. Build UI FIRST so all lateinit views exist before any listeners/sensors fire
+        buildMasterUI()
+
+        // 2. Configure 120Hz & Wallpaper Window after DecorView is attached
         enforce120HzAndLiveWallpaperPipeline()
         initWallpaperColorExtraction()
         initHardwareSensors()
-        appWidgetManager = AppWidgetManager.getInstance(this)
-        appWidgetHost = AppWidgetHost(this, 1024)
-        appWidgetHost?.startListening()
 
-        registerReceiver(pkgAddedReceiver, IntentFilter().apply {
+        try {
+            appWidgetManager = AppWidgetManager.getInstance(this)
+            appWidgetHost = AppWidgetHost(this, 1024)
+            appWidgetHost?.startListening()
+        } catch (_: Throwable) {}
+
+        safeRegisterReceiver(pkgAddedReceiver, IntentFilter().apply {
             addAction(Intent.ACTION_PACKAGE_ADDED)
             addAction(Intent.ACTION_PACKAGE_REMOVED)
             addDataScheme("package")
         })
 
-        buildMasterUI()
         updateAllTelemetry()
         loadAppsAsync()
     }
 
+    private fun safeRegisterReceiver(receiver: BroadcastReceiver, filter: IntentFilter) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(receiver, filter)
+            }
+        } catch (_: Throwable) {}
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        try { unregisterReceiver(pkgAddedReceiver) } catch (_: Exception) {}
-        try { appWidgetHost?.stopListening() } catch (_: Exception) {}
+        try { unregisterReceiver(pkgAddedReceiver) } catch (_: Throwable) {}
+        try { appWidgetHost?.stopListening() } catch (_: Throwable) {}
     }
 
     private fun enforce120HzAndLiveWallpaperPipeline() {
-        window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
-        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-        window.statusBarColor = Color.TRANSPARENT
-        window.navigationBarColor = Color.TRANSPARENT
+        try {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
+            window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val highest = display?.supportedModes?.maxByOrNull { it.refreshRate }
-            if (highest != null) {
-                val p = window.attributes
-                p.preferredDisplayModeId = highest.modeId
-                window.attributes = p
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val highest = display?.supportedModes?.maxByOrNull { it.refreshRate }
+                if (highest != null) {
+                    val p = window.attributes
+                    p.preferredDisplayModeId = highest.modeId
+                    window.attributes = p
+                }
+                if (hyperOsImmersiveGestures) {
+                    window.insetsController?.systemBarsBehavior =
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
             }
-            if (hyperOsImmersiveGestures) {
-                window.insetsController?.systemBarsBehavior =
-                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            }
-        }
+        } catch (_: Throwable) {}
     }
 
     private fun initWallpaperColorExtraction() {
@@ -238,23 +258,26 @@ class MainActivity : Activity(), SensorEventListener {
                     applyExtractedWallpaperColors(colors)
                 }
             }
-        } catch (_: Exception) {}
+        } catch (_: Throwable) {}
     }
 
     private fun applyExtractedWallpaperColors(colors: WallpaperColors) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-            val primary = colors.primaryColor.toArgb()
-            val hsv = FloatArray(3)
-            Color.colorToHSV(primary, hsv)
-            hsv[1] = hsv[1].coerceAtLeast(0.55f)
-            hsv[2] = hsv[2].coerceAtLeast(0.85f)
-            wallpaperExtractedColor = Color.HSVToColor(hsv)
-            if (useWallpaperIconTint) {
-                renderMaxFolders()
-                renderDesktopGrid()
-                if (isDrawerOpen) renderDrawerApps(drawerSearchInput.text.toString())
+        if (!isUiBuilt) return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                val primary = colors.primaryColor.toArgb()
+                val hsv = FloatArray(3)
+                Color.colorToHSV(primary, hsv)
+                hsv[1] = hsv[1].coerceAtLeast(0.55f)
+                hsv[2] = hsv[2].coerceAtLeast(0.85f)
+                wallpaperExtractedColor = Color.HSVToColor(hsv)
+                if (useWallpaperIconTint) {
+                    renderMaxFolders()
+                    renderDesktopGrid()
+                    if (isDrawerOpen) renderDrawerApps(drawerSearchInput.text.toString())
+                }
             }
-        }
+        } catch (_: Throwable) {}
     }
 
     private fun buildDynamicIconFilter(): ColorFilter? {
@@ -304,22 +327,26 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun initHardwareSensors() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(arrayOf(Manifest.permission.ACTIVITY_RECOGNITION), 101)
+        try {
+            sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+            val hasStepPerm = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                checkSelfPermission(Manifest.permission.ACTIVITY_RECOGNITION) == PackageManager.PERMISSION_GRANTED
+            } else true
+
+            if (hasStepPerm) {
+                sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)?.let {
+                    sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+                }
             }
-        }
-        sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
-        sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)?.let {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
-        }
-        @Suppress("DEPRECATION")
-        sensorManager?.getDefaultSensor(Sensor.TYPE_ORIENTATION)?.let {
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
-        }
+            @Suppress("DEPRECATION")
+            sensorManager?.getDefaultSensor(Sensor.TYPE_ORIENTATION)?.let {
+                sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+            }
+        } catch (_: Throwable) {}
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
+        if (!isUiBuilt) return
         @Suppress("DEPRECATION")
         when (event?.sensor?.type) {
             Sensor.TYPE_STEP_COUNTER -> {
@@ -360,79 +387,83 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun loadState() {
-        wallpaperDimAlpha = prefs.getInt("wall_dim", 55)
-        widgetOpacityAlpha = prefs.getInt("widget_alpha", 165)
-        addAppsToHome = prefs.getBoolean("add_apps_home", true)
-        swipeDownBehavior = prefs.getInt("swipe_down_behavior", 0)
-        notificationDotsMode = prefs.getInt("notif_dots_mode", 1)
-        isLabelFree = prefs.getBoolean("label_free", false)
-        maxIconsEnabled = prefs.getBoolean("max_icons_enabled", true)
-        lockLayout = prefs.getBoolean("lock_layout", false)
-        smartAppCategorization = prefs.getBoolean("smart_cat_default", false)
-        autoOpenKeyboard = prefs.getBoolean("auto_open_kb", true)
-        iconPackMode = prefs.getInt("icon_pack_mode", 0)
-        isMonoIcons = prefs.getBoolean("mono", true)
-        useWallpaperIconTint = prefs.getBoolean("wall_tint", true)
-        isDetoxMode = prefs.getBoolean("detox", false)
-        hyperOsImmersiveGestures = prefs.getBoolean("hyperos_gestures", true)
-        doubleTapMode = prefs.getInt("double_tap_mode", 0)
-        gridColumns = prefs.getInt("grid_cols", 4)
-        gridRows = prefs.getInt("grid_rows", 5)
-        weatherWidgetSpan = prefs.getInt("weather_span", 1)
-        currentSpace = prefs.getString("space", "FOCUS") ?: "FOCUS"
-        accentColor = prefs.getInt("accent", Color.parseColor("#D71921"))
-        wallpaperExtractedColor = prefs.getInt("wall_color", Color.parseColor("#38BDF8"))
-        drawerTab = if (smartAppCategorization) 1 else 0
+        try {
+            wallpaperDimAlpha = prefs.getInt("wall_dim", 55)
+            widgetOpacityAlpha = prefs.getInt("widget_alpha", 165)
+            addAppsToHome = prefs.getBoolean("add_apps_home", true)
+            swipeDownBehavior = prefs.getInt("swipe_down_behavior", 0)
+            notificationDotsMode = prefs.getInt("notif_dots_mode", 1)
+            isLabelFree = prefs.getBoolean("label_free", false)
+            maxIconsEnabled = prefs.getBoolean("max_icons_enabled", true)
+            lockLayout = prefs.getBoolean("lock_layout", false)
+            smartAppCategorization = prefs.getBoolean("smart_cat_default", false)
+            autoOpenKeyboard = prefs.getBoolean("auto_open_kb", true)
+            iconPackMode = prefs.getInt("icon_pack_mode", 0)
+            isMonoIcons = prefs.getBoolean("mono", true)
+            useWallpaperIconTint = prefs.getBoolean("wall_tint", true)
+            isDetoxMode = prefs.getBoolean("detox", false)
+            hyperOsImmersiveGestures = prefs.getBoolean("hyperos_gestures", true)
+            doubleTapMode = prefs.getInt("double_tap_mode", 0)
+            gridColumns = prefs.getInt("grid_cols", 4).coerceIn(4, 6)
+            gridRows = prefs.getInt("grid_rows", 5).coerceIn(4, 6)
+            weatherWidgetSpan = prefs.getInt("weather_span", 1).coerceIn(1, 2)
+            currentSpace = prefs.getString("space", "FOCUS") ?: "FOCUS"
+            accentColor = prefs.getInt("accent", Color.parseColor("#D71921"))
+            wallpaperExtractedColor = prefs.getInt("wall_color", Color.parseColor("#38BDF8"))
+            drawerTab = if (smartAppCategorization) 1 else 0
 
-        maxIconPkgs.clear()
-        maxIconPkgs.addAll(prefs.getStringSet("max_icons", emptySet()) ?: emptySet())
-        hiddenPkgs.clear()
-        hiddenPkgs.addAll(prefs.getStringSet("hidden_pkgs", emptySet()) ?: emptySet())
-        privateVaultPkgs.clear()
-        privateVaultPkgs.addAll(prefs.getStringSet("private_pkgs", emptySet()) ?: emptySet())
-        decoyVaultPkgs.clear()
-        decoyVaultPkgs.addAll(prefs.getStringSet("decoy_pkgs", emptySet()) ?: emptySet())
-        mindfulPkgs.clear()
-        mindfulPkgs.addAll(prefs.getStringSet("mindful_pkgs", emptySet()) ?: emptySet())
+            maxIconPkgs.clear()
+            maxIconPkgs.addAll(prefs.getStringSet("max_icons", emptySet()) ?: emptySet())
+            hiddenPkgs.clear()
+            hiddenPkgs.addAll(prefs.getStringSet("hidden_pkgs", emptySet()) ?: emptySet())
+            privateVaultPkgs.clear()
+            privateVaultPkgs.addAll(prefs.getStringSet("private_pkgs", emptySet()) ?: emptySet())
+            decoyVaultPkgs.clear()
+            decoyVaultPkgs.addAll(prefs.getStringSet("decoy_pkgs", emptySet()) ?: emptySet())
+            mindfulPkgs.clear()
+            mindfulPkgs.addAll(prefs.getStringSet("mindful_pkgs", emptySet()) ?: emptySet())
 
-        favoritePkgs.clear()
-        val favRaw = prefs.getString("fav_list", null)
-        if (!favRaw.isNullOrEmpty()) {
-            favoritePkgs.addAll(favRaw.split(",").filter { it.isNotBlank() })
-        }
+            favoritePkgs.clear()
+            val favRaw = prefs.getString("fav_list", null)
+            if (!favRaw.isNullOrEmpty()) {
+                favoritePkgs.addAll(favRaw.split(",").filter { it.isNotBlank() })
+            }
+        } catch (_: Throwable) {}
     }
 
     private fun saveState() {
-        prefs.edit()
-            .putInt("wall_dim", wallpaperDimAlpha)
-            .putInt("widget_alpha", widgetOpacityAlpha)
-            .putBoolean("add_apps_home", addAppsToHome)
-            .putInt("swipe_down_behavior", swipeDownBehavior)
-            .putInt("notif_dots_mode", notificationDotsMode)
-            .putBoolean("label_free", isLabelFree)
-            .putBoolean("max_icons_enabled", maxIconsEnabled)
-            .putBoolean("lock_layout", lockLayout)
-            .putBoolean("smart_cat_default", smartAppCategorization)
-            .putBoolean("auto_open_kb", autoOpenKeyboard)
-            .putInt("icon_pack_mode", iconPackMode)
-            .putBoolean("mono", isMonoIcons)
-            .putBoolean("wall_tint", useWallpaperIconTint)
-            .putBoolean("detox", isDetoxMode)
-            .putBoolean("hyperos_gestures", hyperOsImmersiveGestures)
-            .putInt("double_tap_mode", doubleTapMode)
-            .putInt("grid_cols", gridColumns)
-            .putInt("grid_rows", gridRows)
-            .putInt("weather_span", weatherWidgetSpan)
-            .putString("space", currentSpace)
-            .putInt("accent", accentColor)
-            .putInt("wall_color", wallpaperExtractedColor)
-            .putStringSet("max_icons", maxIconPkgs)
-            .putStringSet("hidden_pkgs", hiddenPkgs)
-            .putStringSet("private_pkgs", privateVaultPkgs)
-            .putStringSet("decoy_pkgs", decoyVaultPkgs)
-            .putStringSet("mindful_pkgs", mindfulPkgs)
-            .putString("fav_list", favoritePkgs.joinToString(","))
-            .apply()
+        try {
+            prefs.edit()
+                .putInt("wall_dim", wallpaperDimAlpha)
+                .putInt("widget_alpha", widgetOpacityAlpha)
+                .putBoolean("add_apps_home", addAppsToHome)
+                .putInt("swipe_down_behavior", swipeDownBehavior)
+                .putInt("notif_dots_mode", notificationDotsMode)
+                .putBoolean("label_free", isLabelFree)
+                .putBoolean("max_icons_enabled", maxIconsEnabled)
+                .putBoolean("lock_layout", lockLayout)
+                .putBoolean("smart_cat_default", smartAppCategorization)
+                .putBoolean("auto_open_kb", autoOpenKeyboard)
+                .putInt("icon_pack_mode", iconPackMode)
+                .putBoolean("mono", isMonoIcons)
+                .putBoolean("wall_tint", useWallpaperIconTint)
+                .putBoolean("detox", isDetoxMode)
+                .putBoolean("hyperos_gestures", hyperOsImmersiveGestures)
+                .putInt("double_tap_mode", doubleTapMode)
+                .putInt("grid_cols", gridColumns)
+                .putInt("grid_rows", gridRows)
+                .putInt("weather_span", weatherWidgetSpan)
+                .putString("space", currentSpace)
+                .putInt("accent", accentColor)
+                .putInt("wall_color", wallpaperExtractedColor)
+                .putStringSet("max_icons", HashSet(maxIconPkgs))
+                .putStringSet("hidden_pkgs", HashSet(hiddenPkgs))
+                .putStringSet("private_pkgs", HashSet(privateVaultPkgs))
+                .putStringSet("decoy_pkgs", HashSet(decoyVaultPkgs))
+                .putStringSet("mindful_pkgs", HashSet(mindfulPkgs))
+                .putString("fav_list", favoritePkgs.joinToString(","))
+                .apply()
+        } catch (_: Throwable) {}
     }
 
     private fun buildMasterUI() {
@@ -923,6 +954,7 @@ class MainActivity : Activity(), SensorEventListener {
         favGridLayout.setOnTouchListener { _, ev -> gd.onTouchEvent(ev); false }
 
         setContentView(rootStack)
+        isUiBuilt = true
     }
 
     private fun renderSpacePills() {
@@ -1942,3 +1974,323 @@ class MainActivity : Activity(), SensorEventListener {
             }
             .show()
     }
+
+    private fun updateAllTelemetry() {
+        if (!isUiBuilt) return
+        try {
+            val now = Date()
+            val bm = safeRegisterBatteryCheck()
+            val level = bm?.getIntExtra(BatteryManager.EXTRA_LEVEL, 86) ?: 86
+            val tempC = (bm?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 290) ?: 290) / 10.0f
+
+            when (clockFaceMode) {
+                0 -> {
+                    val timeStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(now)
+                    val dateStr = SimpleDateFormat("EEE, dd MMM", Locale.getDefault()).format(now).uppercase(Locale.getDefault())
+                    dotMatrixHeader.setDotText(timeStr)
+                    telemetrySubText.text = "$dateStr // BAT $level% // ${tempC}°C // SPACE: $currentSpace"
+                }
+                1 -> {
+                    val timeStr = SimpleDateFormat("hh.mm", Locale.getDefault()).format(now)
+                    dotMatrixHeader.setDotText(timeStr)
+                    telemetrySubText.text = "MINIMALIST ANALOG MODE // 120HZ LOCKED // BAT $level%"
+                }
+                2 -> {
+                    val utcFmt = SimpleDateFormat("HH:mm", Locale.getDefault()).apply {
+                        timeZone = TimeZone.getTimeZone("UTC")
+                    }
+                    dotMatrixHeader.setDotText(utcFmt.format(now))
+                    telemetrySubText.text = "WORLD UTC TIME // IST +05:30 // SPACE: $currentSpace"
+                }
+                else -> {
+                    val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+                    val mem = ActivityManager.MemoryInfo()
+                    am.getMemoryInfo(mem)
+                    val availGb = String.format(Locale.US, "%.1f", mem.availMem / (1024.0 * 1024.0 * 1024.0))
+                    dotMatrixHeader.setDotText("$level:${tempC.toInt()}".take(5))
+                    telemetrySubText.text = "FREE RAM: ${availGb}GB // CORES: ${Runtime.getRuntime().availableProcessors()} // ${tempC}°C"
+                }
+            }
+            peripheralStripText.text = "GRID ${gridColumns}x${gridRows} • ${if (lockLayout) "LOCKED 🔒" else "UNLOCKED"} • HOLD EMPTY SPACE FOR HOME SETTINGS"
+            updateSmartStackUI()
+        } catch (_: Throwable) {}
+    }
+
+    private fun safeRegisterBatteryCheck(): Intent? {
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED), Context.RECEIVER_EXPORTED)
+            } else {
+                registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun updateSmartStackUI() {
+        if (!isUiBuilt) return
+        val spanTag = if (weatherWidgetSpan == 2) "2x1 WIDE" else "1x1"
+        when (smartStackIndex) {
+            0 -> {
+                smartStackTitle.text = "STACK 1/4 // WEATHER ($spanTag)"
+                smartStackValue.text = "29°C CLEAR"
+                smartStackSub.text = "AHMEDABAD • HOLD TO RESIZE"
+            }
+            1 -> {
+                smartStackTitle.text = "STACK 2/4 // PEDOMETER ($spanTag)"
+                smartStackValue.text = "$dailySteps STEPS"
+                smartStackSub.text = "${(dailySteps * 100 / 6000).coerceAtMost(100)}% OF 6,000 GOAL"
+            }
+            2 -> {
+                smartStackTitle.text = "STACK 3/4 // COMPASS ($spanTag)"
+                smartStackValue.text = "${compassAzimuth}° NE"
+                smartStackSub.text = "MAGNETOMETER LOCKED"
+            }
+            else -> {
+                smartStackTitle.text = "STACK 4/4 // WELLNESS ($spanTag)"
+                smartStackValue.text = "2H 14M ACTIVE"
+                smartStackSub.text = "18% BELOW DAILY LIMIT"
+            }
+        }
+    }
+
+    private fun toggleGlyphTimer() {
+        triggerHaptic(0)
+        if (glyphRunning) {
+            glyphRunning = false
+            glyphRunnable?.let { mainHandler.removeCallbacks(it) }
+            glyphStatusText.text = "PAUSED // ${formatSec(glyphSecondsLeft)}"
+        } else {
+            glyphRunning = true
+            glyphRunnable = object : Runnable {
+                override fun run() {
+                    if (!glyphRunning) return
+                    if (glyphSecondsLeft > 0) {
+                        glyphSecondsLeft--
+                        glyphProgressView.setProgress(1f - (glyphSecondsLeft / (25f * 60f)))
+                        glyphStatusText.text = "GLYPH TIMER // ${formatSec(glyphSecondsLeft)}"
+                        mainHandler.postDelayed(this, 1000L)
+                    } else {
+                        glyphRunning = false
+                        triggerHaptic(1)
+                        glyphStatusText.text = "COMPLETE // TAP RESTART"
+                        glyphSecondsLeft = 25 * 60
+                    }
+                }
+            }
+            mainHandler.post(glyphRunnable!!)
+        }
+    }
+
+    private fun resetGlyphTimer() {
+        triggerHaptic(1)
+        glyphRunning = false
+        glyphRunnable?.let { mainHandler.removeCallbacks(it) }
+        glyphSecondsLeft = 25 * 60
+        glyphProgressView.setProgress(0f)
+        glyphStatusText.text = "GLYPH TIMER // 25:00"
+    }
+
+    private fun formatSec(sec: Int): String = String.format(Locale.US, "%02d:%02d", sec / 60, sec % 60)
+
+    private fun dispatchMediaKey(keyCode: Int) {
+        try {
+            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            val now = SystemClock.uptimeMillis()
+            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0))
+            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0))
+        } catch (_: Throwable) {}
+    }
+
+    private fun toggleFlashlight() {
+        try {
+            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val id = cm.cameraIdList.firstOrNull() ?: return
+            isTorchOn = !isTorchOn
+            cm.setTorchMode(id, isTorchOn)
+            triggerHaptic(1)
+            Toast.makeText(this, if (isTorchOn) "Torch ON" else "Torch OFF", Toast.LENGTH_SHORT).show()
+        } catch (_: Throwable) {}
+    }
+
+    private fun openDrawer(focusKb: Boolean) {
+        isDrawerOpen = true
+        drawerContainer.alpha = 0f
+        drawerContainer.translationY = dp(36).toFloat()
+        drawerContainer.visibility = View.VISIBLE
+        drawerContainer.animate().alpha(1f).translationY(0f).setDuration(200L).start()
+        renderDrawerApps(drawerSearchInput.text.toString())
+        if (focusKb) {
+            drawerSearchInput.requestFocus()
+            val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            imm?.showSoftInput(drawerSearchInput, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun closeDrawer() {
+        isDrawerOpen = false
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+        imm?.hideSoftInputFromWindow(drawerSearchInput.windowToken, 0)
+        drawerSearchInput.setText("")
+        drawerContainer.visibility = View.GONE
+    }
+
+    private fun launchApp(app: AppEntry, popUpWindow: Boolean) {
+        triggerHaptic(0)
+        app.lastOpenedDaysAgo = 0
+        if (mindfulPkgs.contains(app.pkg)) {
+            Toast.makeText(this, "MINDFUL FRICTION // Breathing 3.0s before opening ${app.customLabel}...", Toast.LENGTH_SHORT).show()
+            mainHandler.postDelayed({ executeLaunch(app, popUpWindow) }, 3000L)
+        } else {
+            executeLaunch(app, popUpWindow)
+        }
+    }
+
+    private fun executeLaunch(app: AppEntry, popUpWindow: Boolean) {
+        try {
+            val intent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
+                component = ComponentName(app.pkg, app.activityName)
+                flags = if (popUpWindow) {
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                } else {
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                }
+            }
+            startActivity(intent)
+            closeDrawer()
+        } catch (_: Throwable) {}
+    }
+
+    private fun expandSystemNotifications() {
+        try {
+            val service = getSystemService("statusbar")
+            Class.forName("android.app.StatusBarManager").getMethod("expandNotificationsPanel").invoke(service)
+        } catch (_: Throwable) {
+            showZeroStateGlanceSheet()
+        }
+    }
+
+    private fun expandSystemQuickSettings() {
+        try {
+            val service = getSystemService("statusbar")
+            Class.forName("android.app.StatusBarManager").getMethod("expandSettingsPanel").invoke(service)
+        } catch (_: Throwable) {
+            showQuickControlCenterDialog()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        safeRegisterReceiver(tickReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_TIME_TICK)
+            addAction(Intent.ACTION_TIME_CHANGED)
+            addAction(Intent.ACTION_BATTERY_CHANGED)
+        })
+        updateAllTelemetry()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        try { unregisterReceiver(tickReceiver) } catch (_: Throwable) {}
+    }
+
+    @Deprecated("Launcher Back Handler")
+    override fun onBackPressed() {
+        if (isSleepOverlayActive) {
+            isSleepOverlayActive = false
+            sleepLockOverlay.visibility = View.GONE
+            return
+        }
+        if (isDrawerOpen) closeDrawer()
+    }
+
+    private fun dp(v: Int): Int =
+        TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
+
+    private fun roundRect(fill: Int, rad: Int, stroke: Int? = null): GradientDrawable {
+        return GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = rad.toFloat()
+            setColor(fill)
+            if (stroke != null) setStroke(dp(1), stroke)
+        }
+    }
+
+    class DotProgressBarView(context: Context, private val accentColor: Int) : View(context) {
+        private var progress = 0.35f
+        private val litPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accentColor }
+        private val dimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2A2A2E") }
+
+        fun setProgress(p: Float) {
+            progress = p.coerceIn(0f, 1f)
+            invalidate()
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val totalDots = 18
+            val spacing = width / totalDots.toFloat()
+            val r = (spacing * 0.34f).coerceAtMost(height * 0.4f)
+            val cy = height / 2f
+            val activeDots = (progress * totalDots).toInt()
+            for (i in 0 until totalDots) {
+                canvas.drawCircle((i + 0.5f) * spacing, cy, r, if (i <= activeDots && progress > 0f) litPaint else dimPaint)
+            }
+        }
+    }
+
+    class DotMatrixView(context: Context, private val accentColor: Int) : View(context) {
+        private var currentText = "12:00"
+        private val whitePaint = Paint().apply { color = Color.WHITE; isAntiAlias = false }
+        private val accentPaint = Paint().apply { color = accentColor; isAntiAlias = false }
+        private val offPaint = Paint().apply { color = Color.parseColor("#222226"); isAntiAlias = false }
+
+        private val glyphs = mapOf(
+            '0' to arrayOf("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+            '1' to arrayOf("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+            '2' to arrayOf("01110", "10001", "00001", "00110", "01000", "10000", "11111"),
+            '3' to arrayOf("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+            '4' to arrayOf("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+            '5' to arrayOf("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
+            '6' to arrayOf("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
+            '7' to arrayOf("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+            '8' to arrayOf("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+            '9' to arrayOf("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
+            ':' to arrayOf("000", "010", "010", "000", "010", "010", "000"),
+            '.' to arrayOf("00", "00", "00", "00", "00", "11", "11")
+        )
+
+        fun setDotText(t: String) {
+            if (currentText != t) {
+                currentText = t
+                invalidate()
+            }
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val rows = 7
+            val dotSpacing = height / (rows + 1f)
+            val r = dotSpacing * 0.36f
+            var cursorX = dotSpacing
+            for (ch in currentText) {
+                val matrix = glyphs[ch] ?: continue
+                val cols = matrix[0].length
+                for (row in 0 until rows) {
+                    for (col in 0 until cols) {
+                        val lit = matrix[row][col] == '1'
+                        val p = when {
+                            !lit -> offPaint
+                            ch == ':' || ch == '.' -> accentPaint
+                            else -> whitePaint
+                        }
+                        canvas.drawCircle(cursorX + col * dotSpacing, (row + 1) * dotSpacing, r, p)
+                    }
+                }
+                cursorX += (cols + 1.4f) * dotSpacing
+            }
+        }
+    }
+}
