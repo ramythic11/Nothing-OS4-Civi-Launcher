@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.pratik.nothingcivi">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.EXPAND_STATUS_BAR" />
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    <uses-permission android:name="android.permission.SET_WALLPAPER" />
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -16,7 +16,7 @@
         android:label="KINETIC OS 4.0"
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+        android:theme="@android:style/Theme.DeviceDefault.Wallpaper.NoTitleBar">
         <activity
             android:name=".MainActivity"
             android:exported="true"
