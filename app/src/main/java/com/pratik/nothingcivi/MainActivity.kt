@@ -4,10 +4,15 @@ import android.Manifest
 import android.app.Activity
 import android.app.ActivityManager
 import android.app.AlertDialog
+import android.app.WallpaperColors
+import android.app.WallpaperManager
+import android.appwidget.AppWidgetHost
+import android.appwidget.AppWidgetManager
 import android.content.*
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.*
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.hardware.Sensor
@@ -32,8 +37,6 @@ import android.widget.*
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.Executors
-import kotlin.math.cos
-import kotlin.math.sin
 
 data class AppEntry(
     val defaultLabel: String,
@@ -49,28 +52,35 @@ data class AppEntry(
 
 class MainActivity : Activity(), SensorEventListener {
 
-    // Dynamic Palette & Material Styling (Section 1)
+    // Live Wallpaper Scrim & Dynamic Wallpaper Tint State (No Rigid Pitch-Black Background!)
+    private var wallpaperDimAlpha = 60 // 0 = 100% Clear Wallpaper, 255 = Solid Black
+    private var widgetOpacityAlpha = 165 // Translucent Glass Backing over Live Wallpaper
     private var accentColor = Color.parseColor("#D71921")
-    private var isExtraDark = true
-    private var isLabelFree = false
+    private var wallpaperExtractedColor = Color.parseColor("#38BDF8")
+    private var useWallpaperIconTint = true
     private var isMonoIcons = true
+    private var isLabelFree = false
     private var isDetoxMode = false
+    private var hyperOsImmersiveGestures = true
+    private var doubleTapMode = 0 // 0 = Screen Sleep/Lock Overlay, 1 = Wallpaper Peek, 2 = Detox Mode
     private var thumbArcMode = 0 // 0=Off, 1=Right-Hand, 2=Left-Hand
     private var gridColumns = 4
     private var gridRows = 5
+    private var weatherWidgetSpan = 1 // 1 = 1x1, 2 = 2x1 Resizable Widget
     private var currentSpace = "FOCUS"
     private val spaces = listOf("WORK", "COMMUTE", "FITNESS", "FOCUS", "WEEKEND")
 
-    private val COLOR_BG get() = if (isExtraDark) Color.parseColor("#000000") else Color.parseColor("#0C0D10")
-    private val COLOR_CARD get() = Color.parseColor("#141417")
-    private val COLOR_CARD_ALT get() = Color.parseColor("#1C1D22")
-    private val COLOR_STROKE get() = Color.parseColor("#2A2B32")
+    private val COLOR_CARD get() = Color.argb(widgetOpacityAlpha, 18, 20, 26)
+    private val COLOR_CARD_ALT get() = Color.argb((widgetOpacityAlpha + 30).coerceAtMost(240), 26, 28, 36)
+    private val COLOR_STROKE get() = if (useWallpaperIconTint) adjustAlpha(wallpaperExtractedColor, 95) else Color.argb(75, 255, 255, 255)
     private val COLOR_WHITE = Color.parseColor("#FFFFFF")
-    private val COLOR_MUTED = Color.parseColor("#7E7E86")
+    private val COLOR_MUTED = Color.parseColor("#A1A1AA")
 
     private lateinit var prefs: SharedPreferences
     private val bgExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var appWidgetHost: AppWidgetHost? = null
+    private var appWidgetManager: AppWidgetManager? = null
 
     private val allApps = mutableListOf<AppEntry>()
     private val favoritePkgs = mutableListOf<String>()
@@ -80,10 +90,9 @@ class MainActivity : Activity(), SensorEventListener {
     private val privateVaultPkgs = mutableSetOf<String>()
     private val decoyVaultPkgs = mutableSetOf<String>()
     private val mindfulPkgs = mutableSetOf<String>()
-    private val batchSelectedPkgs = mutableSetOf<String>()
-    private var isBatchMode = false
+    private val customFolders = mutableMapOf<String, MutableList<String>>()
 
-    // Smart Stack & Telemetry State (Section 4 & 9)
+    // Smart Stack & Telemetry State
     private var clockFaceMode = 0 // 0=DotMatrix, 1=Minimalist Analog, 2=UTC Dual, 3=Civi NPU/RAM
     private var smartStackIndex = 0 // 0=Weather, 1=Pedometer Ring, 2=Compass Heading, 3=ScreenTime
     private var compassAzimuth = 42
@@ -91,8 +100,9 @@ class MainActivity : Activity(), SensorEventListener {
     private var stepBaseline = -1f
     private var isTorchOn = false
     private var isDrawerOpen = false
-    private var drawerTab = 0 // 0=A-Z, 1=Smart Library, 2=Ghost Shelf (>30d), 3=Vault (Real/Decoy)
-    private var activeVaultMode = 0 // 0=Locked, 1=Primary Vault, 2=Decoy Profile
+    private var isSleepOverlayActive = false
+    private var drawerTab = 0 // 0=A-Z, 1=Smart Arrange Hubs, 2=Ghost Shelf (>30d), 3=Vault (Real/Decoy)
+    private var activeVaultMode = 0
 
     // Glyph Timer State
     private var glyphRunning = false
@@ -104,9 +114,13 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var homeContainer: LinearLayout
     private lateinit var detoxContainer: LinearLayout
     private lateinit var drawerContainer: LinearLayout
+    private lateinit var sleepLockOverlay: FrameLayout
     private lateinit var dotMatrixHeader: DotMatrixView
     private lateinit var telemetrySubText: TextView
     private lateinit var spacePillsRow: LinearLayout
+    private lateinit var bentoRowLayout: LinearLayout
+    private lateinit var smartStackCard: LinearLayout
+    private lateinit var rightGlyphCard: LinearLayout
     private lateinit var smartStackTitle: TextView
     private lateinit var smartStackValue: TextView
     private lateinit var smartStackSub: TextView
@@ -120,21 +134,15 @@ class MainActivity : Activity(), SensorEventListener {
     private lateinit var dockLayout: LinearLayout
     private lateinit var drawerSearchInput: EditText
     private lateinit var pinnedShelfLayout: LinearLayout
-    private lateinit var appsGridView: GridView
+    private lateinit var drawerMainContainer: FrameLayout
 
     private var sensorManager: SensorManager? = null
 
-    private val monoFilter = ColorMatrixColorFilter(ColorMatrix().apply {
-        setSaturation(0f)
-        val c = 1.32f
-        val t = (-0.5f * c + 0.5f) * 255f
-        postConcat(ColorMatrix(floatArrayOf(
-            c, 0f, 0f, 0f, t,
-            0f, c, 0f, 0f, t,
-            0f, 0f, c, 0f, t,
-            0f, 0f, 0f, 1f, 0f
-        )))
-    })
+    private val wallpaperColorListener = WallpaperManager.OnColorsChangedListener { colors, _ ->
+        if (colors != null) {
+            applyExtractedWallpaperColors(colors)
+        }
+    }
 
     private val tickReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -144,19 +152,27 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enforce120HzPipeline()
         prefs = getSharedPreferences("kinetic_os4_master", Context.MODE_PRIVATE)
         loadState()
+        enforce120HzAndLiveWallpaperPipeline()
+        initWallpaperColorExtraction()
         initHardwareSensors()
+        appWidgetManager = AppWidgetManager.getInstance(this)
+        appWidgetHost = AppWidgetHost(this, 1024)
+        appWidgetHost?.startListening()
+
         buildMasterUI()
         updateAllTelemetry()
         loadAppsAsync()
     }
 
-    private fun enforce120HzPipeline() {
+    private fun enforce120HzAndLiveWallpaperPipeline() {
+        // Ensure Real Android System Wallpaper is visible behind launcher (No rigid black background)
         window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
+        window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         window.statusBarColor = Color.TRANSPARENT
-        window.navigationBarColor = COLOR_BG
+        window.navigationBarColor = Color.TRANSPARENT
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             val highest = display?.supportedModes?.maxByOrNull { it.refreshRate }
             if (highest != null) {
@@ -164,7 +180,76 @@ class MainActivity : Activity(), SensorEventListener {
                 p.preferredDisplayModeId = highest.modeId
                 window.attributes = p
             }
+            if (hyperOsImmersiveGestures) {
+                window.insetsController?.systemBarsBehavior =
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
         }
+    }
+
+    private fun initWallpaperColorExtraction() {
+        try {
+            val wm = WallpaperManager.getInstance(this)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                wm.addOnColorsChangedListener(wallpaperColorListener, mainHandler)
+                val colors = wm.getWallpaperColors(WallpaperManager.FLAG_SYSTEM)
+                if (colors != null) {
+                    applyExtractedWallpaperColors(colors)
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
+    private fun applyExtractedWallpaperColors(colors: WallpaperColors) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            val primary = colors.primaryColor.toArgb()
+            // Boost luminance so icon tint is always legible over the live wallpaper
+            val hsv = FloatArray(3)
+            Color.colorToHSV(primary, hsv)
+            hsv[1] = hsv[1].coerceAtLeast(0.55f)
+            hsv[2] = hsv[2].coerceAtLeast(0.85f)
+            wallpaperExtractedColor = Color.HSVToColor(hsv)
+            if (useWallpaperIconTint) {
+                renderMaxFolders()
+                renderDesktopGrid()
+                if (isDrawerOpen) renderDrawerApps(drawerSearchInput.text.toString())
+            }
+        }
+    }
+
+    private fun buildDynamicIconFilter(): ColorFilter? {
+        if (!isMonoIcons && !useWallpaperIconTint) return null
+        if (isMonoIcons && !useWallpaperIconTint) {
+            // Pure Crisp Nothing Monochrome Filter
+            return ColorMatrixColorFilter(ColorMatrix().apply {
+                setSaturation(0f)
+                val c = 1.30f
+                val t = (-0.5f * c + 0.5f) * 255f
+                postConcat(ColorMatrix(floatArrayOf(
+                    c, 0f, 0f, 0f, t,
+                    0f, c, 0f, 0f, t,
+                    0f, 0f, c, 0f, t,
+                    0f, 0f, 0f, 1f, 0f
+                )))
+            })
+        }
+        // Wallpaper-Adaptive Monochrome Tint Filter (Tints icons to match live wallpaper!)
+        val r = Color.red(wallpaperExtractedColor) / 255f
+        val g = Color.green(wallpaperExtractedColor) / 255f
+        val b = Color.blue(wallpaperExtractedColor) / 255f
+        val gray = ColorMatrix().apply { setSaturation(0f) }
+        val tintMatrix = ColorMatrix(floatArrayOf(
+            r * 1.15f, 0f, 0f, 0f, 18f,
+            0f, g * 1.15f, 0f, 0f, 18f,
+            0f, 0f, b * 1.15f, 0f, 18f,
+            0f, 0f, 0f, 1f, 0f
+        ))
+        gray.postConcat(tintMatrix)
+        return ColorMatrixColorFilter(gray)
+    }
+
+    private fun adjustAlpha(color: Int, alpha: Int): Int {
+        return Color.argb(alpha.coerceIn(0, 255), Color.red(color), Color.green(color), Color.blue(color))
     }
 
     private fun initHardwareSensors() {
@@ -177,12 +262,14 @@ class MainActivity : Activity(), SensorEventListener {
         sensorManager?.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)?.let {
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
+        @Suppress("DEPRECATION")
         sensorManager?.getDefaultSensor(Sensor.TYPE_ORIENTATION)?.let {
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
         }
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
+        @Suppress("DEPRECATION")
         when (event?.sensor?.type) {
             Sensor.TYPE_STEP_COUNTER -> {
                 val total = event.values[0]
@@ -199,14 +286,13 @@ class MainActivity : Activity(), SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
-    // Haptic Tactile Matrix (Section 1: 4 Standardized Patterns)
     private fun triggerHaptic(type: Int) {
         val vib = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val effect = when (type) {
-                0 -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK) // 8ms Grid Snap
-                1 -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK) // 16ms Long-Press Thud
-                2 -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK) // Two-stage Folder Pop
+                0 -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK)
+                1 -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_HEAVY_CLICK)
+                2 -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_DOUBLE_CLICK)
                 else -> VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK)
             }
             vib.vibrate(effect)
@@ -214,18 +300,32 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun loadState() {
+        wallpaperDimAlpha = prefs.getInt("wall_dim", 55)
+        widgetOpacityAlpha = prefs.getInt("widget_alpha", 165)
         isMonoIcons = prefs.getBoolean("mono", true)
+        useWallpaperIconTint = prefs.getBoolean("wall_tint", true)
         isLabelFree = prefs.getBoolean("label_free", false)
         isDetoxMode = prefs.getBoolean("detox", false)
+        hyperOsImmersiveGestures = prefs.getBoolean("hyperos_gestures", true)
+        doubleTapMode = prefs.getInt("double_tap_mode", 0)
         gridColumns = prefs.getInt("grid_cols", 4)
+        weatherWidgetSpan = prefs.getInt("weather_span", 1)
         currentSpace = prefs.getString("space", "FOCUS") ?: "FOCUS"
         accentColor = prefs.getInt("accent", Color.parseColor("#D71921"))
+        wallpaperExtractedColor = prefs.getInt("wall_color", Color.parseColor("#38BDF8"))
+
+        maxIconPkgs.clear()
         maxIconPkgs.addAll(prefs.getStringSet("max_icons", emptySet()) ?: emptySet())
+        hiddenPkgs.clear()
         hiddenPkgs.addAll(prefs.getStringSet("hidden_pkgs", emptySet()) ?: emptySet())
+        privateVaultPkgs.clear()
         privateVaultPkgs.addAll(prefs.getStringSet("private_pkgs", emptySet()) ?: emptySet())
+        decoyVaultPkgs.clear()
         decoyVaultPkgs.addAll(prefs.getStringSet("decoy_pkgs", emptySet()) ?: emptySet())
+        mindfulPkgs.clear()
         mindfulPkgs.addAll(prefs.getStringSet("mindful_pkgs", emptySet()) ?: emptySet())
 
+        favoritePkgs.clear()
         val favRaw = prefs.getString("fav_list", null)
         if (!favRaw.isNullOrEmpty()) {
             favoritePkgs.addAll(favRaw.split(",").filter { it.isNotBlank() })
@@ -234,12 +334,19 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun saveState() {
         prefs.edit()
+            .putInt("wall_dim", wallpaperDimAlpha)
+            .putInt("widget_alpha", widgetOpacityAlpha)
             .putBoolean("mono", isMonoIcons)
+            .putBoolean("wall_tint", useWallpaperIconTint)
             .putBoolean("label_free", isLabelFree)
             .putBoolean("detox", isDetoxMode)
+            .putBoolean("hyperos_gestures", hyperOsImmersiveGestures)
+            .putInt("double_tap_mode", doubleTapMode)
             .putInt("grid_cols", gridColumns)
+            .putInt("weather_span", weatherWidgetSpan)
             .putString("space", currentSpace)
             .putInt("accent", accentColor)
+            .putInt("wall_color", wallpaperExtractedColor)
             .putStringSet("max_icons", maxIconPkgs)
             .putStringSet("hidden_pkgs", hiddenPkgs)
             .putStringSet("private_pkgs", privateVaultPkgs)
@@ -250,17 +357,18 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun buildMasterUI() {
+        // Transparent scrim over real system wallpaper (NOT pitch-black rigid background)
         rootStack = FrameLayout(this).apply {
-            setBackgroundColor( Color.argb(242, 0, 0, 0))
+            setBackgroundColor(Color.argb(wallpaperDimAlpha, 0, 0, 0))
         }
 
         homeContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(14), dp(34), dp(14), dp(12))
+            setPadding(dp(14), dp(32), dp(14), dp(10))
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
-        // Dynamic Spaces Selector Strip (Section 4)
+        // Top Bar: Dynamic Spaces + Quick Monochrome & Wallpaper Settings Pills
         spacePillsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -271,7 +379,7 @@ class MainActivity : Activity(), SensorEventListener {
         renderSpacePills()
         homeContainer.addView(spacePillsRow)
 
-        // 1. Dot-Matrix Clock & Telemetry Header (Section 1 & 4)
+        // 1. Dot-Matrix Clock & Telemetry Header
         val clockCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = roundRect(COLOR_CARD, dp(22), COLOR_STROKE)
@@ -295,8 +403,28 @@ class MainActivity : Activity(), SensorEventListener {
         dotMatrixHeader = DotMatrixView(this, accentColor).apply {
             layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f)
         }
+        val monoQuickBtn = TextView(this).apply {
+            text = if (isMonoIcons) "MONO:ON" else "MONO:OFF"
+            typeface = Typeface.MONOSPACE
+            textSize = 8f
+            setTextColor(COLOR_WHITE)
+            background = roundRect(if (isMonoIcons) accentColor else COLOR_CARD_ALT, dp(10), COLOR_STROKE)
+            setPadding(dp(7), dp(4), dp(7), dp(4))
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                rightMargin = dp(5)
+            }
+            setOnClickListener {
+                triggerHaptic(0)
+                isMonoIcons = !isMonoIcons
+                saveState()
+                buildMasterUI()
+                updateAllTelemetry()
+                renderMaxFolders()
+                renderDesktopGrid()
+            }
+        }
         val cfgBtn = TextView(this).apply {
-            text = "OS 4.0 // CFG"
+            text = "SETTINGS ⚙"
             typeface = Typeface.MONOSPACE
             textSize = 8.5f
             setTextColor(COLOR_WHITE)
@@ -305,11 +433,12 @@ class MainActivity : Activity(), SensorEventListener {
             setOnClickListener { showArchitecturalConfigDialog() }
         }
         topRow.addView(dotMatrixHeader)
+        topRow.addView(monoQuickBtn)
         topRow.addView(cfgBtn)
 
         telemetrySubText = TextView(this).apply {
             typeface = Typeface.MONOSPACE
-            textSize = 9.5f
+            textSize = 9f
             setTextColor(COLOR_MUTED)
             setPadding(0, dp(5), 0, 0)
         }
@@ -317,23 +446,36 @@ class MainActivity : Activity(), SensorEventListener {
         clockCard.addView(telemetrySubText)
         homeContainer.addView(clockCard)
 
-        // 2. Smart Widget Stack + Glyph Timer Bento (Section 4)
-        val bentoRow = LinearLayout(this).apply {
+        // 2. Resizable Smart Widget Stack + Glyph Timer Bento (Long-Press or Tap Resize to toggle 1x1 vs 2x1 Full-Width)
+        bentoRowLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(7)
             }
         }
 
-        val stackCard = LinearLayout(this).apply {
+        smartStackCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = roundRect(COLOR_CARD, dp(18), COLOR_STROKE)
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { rightMargin = dp(6) }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                rightMargin = if (weatherWidgetSpan == 1) dp(6) else 0
+            }
             setOnClickListener {
                 triggerHaptic(0)
                 smartStackIndex = (smartStackIndex + 1) % 4
                 updateSmartStackUI()
+            }
+            setOnLongClickListener {
+                triggerHaptic(1)
+                weatherWidgetSpan = if (weatherWidgetSpan == 1) 2 else 1
+                saveState()
+                Toast.makeText(this@MainActivity, "Widget Resized to ${if (weatherWidgetSpan == 2) "2x1 Wide" else "1x1 Compact"}", Toast.LENGTH_SHORT).show()
+                buildMasterUI()
+                updateAllTelemetry()
+                renderMaxFolders()
+                renderDesktopGrid()
+                true
             }
         }
         smartStackTitle = TextView(this).apply {
@@ -343,23 +485,24 @@ class MainActivity : Activity(), SensorEventListener {
         }
         smartStackValue = TextView(this).apply {
             typeface = Typeface.MONOSPACE
-            textSize = 13f
+            textSize = if (weatherWidgetSpan == 2) 16f else 13f
             setTextColor(COLOR_WHITE)
             setPadding(0, dp(3), 0, dp(2))
         }
         smartStackSub = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 8f
-            setTextColor(accentColor)
+            setTextColor(if (useWallpaperIconTint) wallpaperExtractedColor else accentColor)
         }
-        stackCard.addView(smartStackTitle)
-        stackCard.addView(smartStackValue)
-        stackCard.addView(smartStackSub)
+        smartStackCard.addView(smartStackTitle)
+        smartStackCard.addView(smartStackValue)
+        smartStackCard.addView(smartStackSub)
 
-        val glyphCard = LinearLayout(this).apply {
+        rightGlyphCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = roundRect(COLOR_CARD, dp(18), COLOR_STROKE)
             setPadding(dp(12), dp(8), dp(12), dp(8))
+            visibility = if (weatherWidgetSpan == 1) View.VISIBLE else View.GONE
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
             setOnClickListener { toggleGlyphTimer() }
             setOnLongClickListener { resetGlyphTimer(); true }
@@ -387,30 +530,39 @@ class MainActivity : Activity(), SensorEventListener {
         mediaRow.addView(mediaKeyBtn("PLAY/PAUSE", KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE))
         mediaRow.addView(mediaKeyBtn(">>|", KeyEvent.KEYCODE_MEDIA_NEXT))
 
-        glyphCard.addView(glyphStatusText)
-        glyphCard.addView(glyphProgressView)
-        glyphCard.addView(mediaRow)
+        rightGlyphCard.addView(glyphStatusText)
+        rightGlyphCard.addView(glyphProgressView)
+        rightGlyphCard.addView(mediaRow)
 
-        bentoRow.addView(stackCard)
-        bentoRow.addView(glyphCard)
-        homeContainer.addView(bentoRow)
+        bentoRowLayout.addView(smartStackCard)
+        bentoRowLayout.addView(rightGlyphCard)
+        homeContainer.addView(bentoRowLayout)
 
-        // 3. Peripheral Telemetry Strip (Section 9)
+        // 3. Quick Wallpaper, Widget Resize & Torch Bar
         peripheralStripText = TextView(this).apply {
-            text = "PERIPHERALS // EAR(3): 92%  •  WATCH: 64%  •  RING: 78%  •  TORCH: OFF"
+            text = "WALLPAPER: LIVE  •  TINT: ${if (useWallpaperIconTint) "AUTO" else "FIXED"}  •  TORCH: ${if (isTorchOn) "ON" else "OFF"}  •  TAP=WALLPAPER"
             typeface = Typeface.MONOSPACE
-            textSize = 8.5f
-            setTextColor(COLOR_MUTED)
+            textSize = 8f
+            setTextColor(COLOR_WHITE)
             background = roundRect(COLOR_CARD, dp(14), COLOR_STROKE)
             setPadding(dp(12), dp(6), dp(12), dp(6))
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
                 topMargin = dp(6)
             }
-            setOnClickListener { toggleFlashlight() }
+            setOnClickListener {
+                triggerHaptic(0)
+                try {
+                    startActivity(Intent(Intent.ACTION_SET_WALLPAPER))
+                } catch (_: Exception) {}
+            }
+            setOnLongClickListener {
+                toggleFlashlight()
+                true
+            }
         }
         homeContainer.addView(peripheralStripText)
 
-        // 4. Max Folders (2x2 Interactive Hubs with Direct 1-Tap Launch + Expand - Section 7)
+        // 4. Max Folders (2x2 Interactive Hubs with Direct 1-Tap Launch + Expand)
         maxFoldersRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -419,7 +571,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         homeContainer.addView(maxFoldersRow)
 
-        // 5. Desktop Configurable App Grid (Sections 2, 6, 8, 9)
+        // 5. Desktop Configurable App Grid
         val favScroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f).apply { topMargin = dp(4) }
@@ -431,7 +583,7 @@ class MainActivity : Activity(), SensorEventListener {
         favScroll.addView(favGridLayout)
         homeContainer.addView(favScroll)
 
-        // 6. Agentic Intent Search Bar (Section 3: SLM Natural Language Parser)
+        // 6. Agentic Intent Search Bar
         agenticBanner = TextView(this).apply {
             typeface = Typeface.MONOSPACE
             textSize = 10f
@@ -470,7 +622,7 @@ class MainActivity : Activity(), SensorEventListener {
             })
         }
         val openDrawerBtn = TextView(this).apply {
-            text = "LIBRARY ↑"
+            text = "DRAWER ↑"
             typeface = Typeface.MONOSPACE
             textSize = 9f
             setTextColor(accentColor)
@@ -491,26 +643,32 @@ class MainActivity : Activity(), SensorEventListener {
         }
         homeContainer.addView(dockLayout)
 
-        // ================= DETOX MINIMALIST MODE LAYER (Section 8) =================
+        // ================= DETOX MINIMALIST MODE LAYER =================
         detoxContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.BLACK)
+            setBackgroundColor(Color.argb(220, 0, 0, 0))
             setPadding(dp(24), dp(48), dp(24), dp(24))
             visibility = if (isDetoxMode) View.VISIBLE else View.GONE
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
-        // ================= APP DRAWER LAYER (Section 5: Pinned Top Shelf, Ghost Shelf, Decoy Vault) =================
+        // ================= APP DRAWER LAYER (A-Z, SMART ARRANGE HUBS, GHOST SHELF, VAULT) =================
         drawerContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(248, 0, 0, 0))
+            setBackgroundColor(Color.argb(215, 8, 10, 14))
             setPadding(dp(14), dp(36), dp(14), dp(12))
             visibility = View.GONE
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
+        val drawerTopRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) }
+        }
+
         drawerSearchInput = EditText(this).apply {
-            hint = "UNIVERSAL MULTI-INDEX // APPS, SHORTCUTS, MATH..."
+            hint = "SEARCH APPS, CATEGORIES, MATH..."
             setHintTextColor(COLOR_MUTED)
             setTextColor(COLOR_WHITE)
             typeface = Typeface.MONOSPACE
@@ -518,7 +676,7 @@ class MainActivity : Activity(), SensorEventListener {
             setSingleLine(true)
             background = roundRect(COLOR_CARD, dp(18), COLOR_STROKE)
             setPadding(dp(14), dp(10), dp(14), dp(10))
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)).apply { bottomMargin = dp(8) }
+            layoutParams = LinearLayout.LayoutParams(0, dp(42), 1f).apply { rightMargin = dp(6) }
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
@@ -527,9 +685,20 @@ class MainActivity : Activity(), SensorEventListener {
                 }
             })
         }
-        drawerContainer.addView(drawerSearchInput)
 
-        // Stationary Pinned Top Shelf in Drawer
+        val closeDrawerBtn = TextView(this).apply {
+            text = "HOME ↓"
+            typeface = Typeface.MONOSPACE
+            textSize = 9f
+            setTextColor(COLOR_WHITE)
+            background = roundRect(COLOR_CARD, dp(14), COLOR_STROKE)
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            setOnClickListener { closeDrawer() }
+        }
+        drawerTopRow.addView(drawerSearchInput)
+        drawerTopRow.addView(closeDrawerBtn)
+        drawerContainer.addView(drawerTopRow)
+
         val shelfHeader = TextView(this).apply {
             text = "PINNED TOP SHELF // STATIONARY"
             typeface = Typeface.MONOSPACE
@@ -547,7 +716,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         drawerContainer.addView(pinnedShelfLayout)
 
-        // Drawer Tabs: A-Z | SMART | GHOST (>30D) | DECOY VAULT
+        // Drawer Mode Tabs: A-Z | SMART ARRANGE | GHOST (>30D) | DECOY VAULT
         val tabsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) }
@@ -559,50 +728,126 @@ class MainActivity : Activity(), SensorEventListener {
             setOnClickListener {
                 triggerHaptic(0)
                 if (idx == 3) promptDecoyOrPrimaryVault()
-                else { drawerTab = idx; buildMasterUI(); openDrawer(false) }
+                else {
+                    drawerTab = idx
+                    buildMasterUI()
+                    openDrawer(false)
+                }
             }
         }
-        tabsRow.addView(makeTab("A-Z", 0))
-        tabsRow.addView(makeTab("SMART", 1))
+        tabsRow.addView(makeTab("A-Z ALL", 0))
+        tabsRow.addView(makeTab("SMART HUBS", 1))
         tabsRow.addView(makeTab("GHOST >30D", 2))
         tabsRow.addView(makeTab("VAULT 🔒", 3))
         drawerContainer.addView(tabsRow)
 
-        appsGridView = GridView(this).apply {
-            numColumns = gridColumns
-            verticalSpacing = dp(10)
-            horizontalSpacing = dp(8)
-            stretchMode = GridView.STRETCH_COLUMN_WIDTH
-            isVerticalScrollBarEnabled = false
+        drawerMainContainer = FrameLayout(this).apply {
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
         }
-        drawerContainer.addView(appsGridView)
+        drawerContainer.addView(drawerMainContainer)
+
+        // ================= INSTANT DOUBLE-TAP SLEEP / LOCK OVERLAY =================
+        sleepLockOverlay = FrameLayout(this).apply {
+            setBackgroundColor(Color.BLACK)
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            val lockText = TextView(this@MainActivity).apply {
+                text = "AOD // DOUBLE-TAP TO WAKE"
+                typeface = Typeface.MONOSPACE
+                textSize = 11f
+                setTextColor(Color.parseColor("#555555"))
+                gravity = Gravity.CENTER
+                layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER)
+            }
+            addView(lockText)
+            val wakeDetector = GestureDetector(this@MainActivity, object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDoubleTap(e: MotionEvent): Boolean {
+                    triggerHaptic(1)
+                    visibility = View.GONE
+                    isSleepOverlayActive = false
+                    return true
+                }
+            })
+            setOnTouchListener { _, ev -> wakeDetector.onTouchEvent(ev); true }
+        }
 
         rootStack.addView(homeContainer)
         rootStack.addView(detoxContainer)
         rootStack.addView(drawerContainer)
+        rootStack.addView(sleepLockOverlay)
 
-        // System Gesture Layer (Section 2: Swipe-Up Drawer, Swipe-Down Shade, Double-Tap Sleep)
+        // ================= MASTER GESTURE ENGINE (Swipe Up, Left Down, Right Down, Double-Tap, Edge Swipes) =================
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (e1 == null || isDrawerOpen) return false
                 val dy = e2.y - e1.y
                 val dx = e2.x - e1.x
-                if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > dp(55)) {
-                    if (dy < 0) { openDrawer(focusKb = false); return true }
-                    else { expandSystemShade(); return true }
+                val screenW = resources.displayMetrics.widthPixels
+
+                // Vertical Swipe Gestures
+                if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > dp(50)) {
+                    if (dy < 0) {
+                        // SWIPE UP -> Open App Drawer Smoothly
+                        triggerHaptic(0)
+                        openDrawer(focusKb = false)
+                        return true
+                    } else {
+                        // SWIPE DOWN -> Check Left Half vs Right Half!
+                        triggerHaptic(0)
+                        if (e1.x < screenW * 0.5f) {
+                            // LEFT-SIDE PULL-DOWN -> System Notification Shade
+                            expandSystemNotifications()
+                        } else {
+                            // RIGHT-SIDE PULL-DOWN -> HyperOS Quick Settings / Control Center
+                            expandSystemQuickSettings()
+                        }
+                        return true
+                    }
+                }
+
+                // Horizontal Edge & Page Swipes
+                if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > dp(65)) {
+                    triggerHaptic(0)
+                    if (dx > 0) {
+                        // Swipe Right -> Zero-State AI Briefing & Glance Dialog
+                        showZeroStateGlanceSheet()
+                    } else {
+                        // Swipe Left -> Quick Control & HyperOS Hub
+                        showQuickControlCenterDialog()
+                    }
+                    return true
                 }
                 return false
             }
+
             override fun onDoubleTap(e: MotionEvent): Boolean {
                 triggerHaptic(1)
-                isDetoxMode = !isDetoxMode
-                saveState()
-                renderDetoxLayer()
+                when (doubleTapMode) {
+                    0 -> {
+                        // Instant Screen Lock / AOD Sleep Mode
+                        isSleepOverlayActive = true
+                        sleepLockOverlay.visibility = View.VISIBLE
+                    }
+                    1 -> {
+                        // Wallpaper Clear Peek Toggle
+                        wallpaperDimAlpha = if (wallpaperDimAlpha > 15) 0 else 55
+                        rootStack.setBackgroundColor(Color.argb(wallpaperDimAlpha, 0, 0, 0))
+                        Toast.makeText(this@MainActivity, if (wallpaperDimAlpha == 0) "100% Clear Wallpaper Mode" else "Standard Scrim Mode", Toast.LENGTH_SHORT).show()
+                    }
+                    else -> {
+                        isDetoxMode = !isDetoxMode
+                        saveState()
+                        renderDetoxLayer()
+                    }
+                }
                 return true
             }
         })
-        homeContainer.setOnTouchListener { _, ev -> gd.onTouchEvent(ev); false }
+
+        homeContainer.setOnTouchListener { _, ev -> gd.onTouchEvent(ev) }
+        favGridLayout.setOnTouchListener { _, ev -> gd.onTouchEvent(ev); false }
 
         setContentView(rootStack)
     }
@@ -772,17 +1017,28 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun classifyApp(info: ApplicationInfo, label: String): String {
         val l = label.lowercase(Locale.getDefault())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            when (info.category) {
+                ApplicationInfo.CATEGORY_SOCIAL -> return "SOCIAL & COMMS"
+                ApplicationInfo.CATEGORY_AUDIO, ApplicationInfo.CATEGORY_VIDEO, ApplicationInfo.CATEGORY_IMAGE -> return "MEDIA & CAMERA"
+                ApplicationInfo.CATEGORY_GAME -> return "GAMES & ARCADE"
+                ApplicationInfo.CATEGORY_PRODUCTIVITY -> return "PRODUCTIVITY"
+            }
+        }
         return when {
-            l.contains("whatsapp") || l.contains("instagram") || l.contains("telegram") || l.contains("phone") -> "SOCIAL"
-            l.contains("youtube") || l.contains("spotify") || l.contains("camera") || l.contains("music") -> "MEDIA"
-            l.contains("pay") || l.contains("bank") || l.contains("upi") -> "FINANCE"
-            else -> "PRODUCTIVITY"
+            l.contains("whatsapp") || l.contains("instagram") || l.contains("telegram") || l.contains("phone") || l.contains("message") || l.contains("chat") || l.contains("contact") -> "SOCIAL & COMMS"
+            l.contains("youtube") || l.contains("spotify") || l.contains("camera") || l.contains("music") || l.contains("gallery") || l.contains("photo") || l.contains("video") -> "MEDIA & CAMERA"
+            l.contains("pay") || l.contains("bank") || l.contains("upi") || l.contains("wallet") || l.contains("cred") || l.contains("zerodha") -> "FINANCE & UPI"
+            l.contains("game") || l.contains("chess") || l.contains("bgmi") || l.contains("clash") -> "GAMES & ARCADE"
+            l.contains("doc") || l.contains("note") || l.contains("mail") || l.contains("gmail") || l.contains("calendar") || l.contains("drive") || l.contains("github") -> "PRODUCTIVITY"
+            else -> "SYSTEM & UTILITIES"
         }
     }
 
     // Section 7: Max Folders (2x2 with 3 Direct 1-Tap Icons + 1 Expand Slot)
     private fun renderMaxFolders() {
         maxFoldersRow.removeAllViews()
+        val filter = buildDynamicIconFilter()
         val folders = listOf("ESSENTIAL HUB" to allApps.take(4), "MEDIA & TOOLS" to allApps.drop(4).take(4))
 
         for ((title, apps) in folders) {
@@ -810,9 +1066,9 @@ class MainActivity : Activity(), SensorEventListener {
             for (a in apps.take(3)) {
                 val img = ImageView(this).apply {
                     setImageDrawable(a.icon.constantState?.newDrawable()?.mutate() ?: a.icon)
-                    colorFilter = if (isMonoIcons) monoFilter else null
+                    colorFilter = filter
                     layoutParams = LinearLayout.LayoutParams(dp(28), dp(28)).apply { rightMargin = dp(6) }
-                    setOnClickListener { launchApp(a, false) } // Direct 1-Tap Launch from Max Folder!
+                    setOnClickListener { launchApp(a, false) }
                 }
                 miniGrid.addView(img)
             }
@@ -850,6 +1106,7 @@ class MainActivity : Activity(), SensorEventListener {
         favGridLayout.columnCount = gridColumns
         dockLayout.removeAllViews()
 
+        val filter = buildDynamicIconFilter()
         val favApps = favoritePkgs.mapNotNull { pkg -> allApps.find { it.pkg == pkg } }
         val screenWidth = resources.displayMetrics.widthPixels - dp(28)
         val cellSize = screenWidth / gridColumns
@@ -873,22 +1130,14 @@ class MainActivity : Activity(), SensorEventListener {
                 }
                 layoutParams = params
 
-                // Single-Handed Thumb Flow Arc offset (Section 9)
                 if (thumbArcMode == 1) translationY = ((index % gridColumns) * dp(3)).toFloat()
                 else if (thumbArcMode == 2) translationY = (((gridColumns - 1) - (index % gridColumns)) * dp(3)).toFloat()
 
-                // Spring Overshoot Entrance
                 scaleX = 0.92f; scaleY = 0.92f
                 animate().scaleX(1f).scaleY(1f).setDuration(240L).setInterpolator(OvershootInterpolator(1.4f)).start()
 
                 setOnClickListener {
-                    if (isBatchMode) {
-                        if (batchSelectedPkgs.contains(app.pkg)) batchSelectedPkgs.remove(app.pkg)
-                        else batchSelectedPkgs.add(app.pkg)
-                        renderDesktopGrid()
-                    } else {
-                        launchApp(app, false)
-                    }
+                    launchApp(app, false)
                 }
                 setOnLongClickListener {
                     triggerHaptic(1)
@@ -899,7 +1148,7 @@ class MainActivity : Activity(), SensorEventListener {
 
             val iconView = ImageView(this).apply {
                 setImageDrawable(app.icon.constantState?.newDrawable()?.mutate() ?: app.icon)
-                colorFilter = if (isMonoIcons) monoFilter else null
+                colorFilter = filter
                 val s = if (isMax) dp(60) else dp(36)
                 layoutParams = LinearLayout.LayoutParams(s, s)
             }
@@ -907,9 +1156,9 @@ class MainActivity : Activity(), SensorEventListener {
 
             if (!isLabelFree) {
                 val lblView = TextView(this).apply {
-                    text = app.customLabel.uppercase(Locale.getDefault())
+                    text = app.customLabel
                     typeface = Typeface.MONOSPACE
-                    textSize = if (isMax) 10.5f else 8f
+                    textSize = if (isMax) 10.5f else 8.5f
                     setTextColor(COLOR_WHITE)
                     maxLines = 1
                     ellipsize = TextUtils.TruncateAt.END
@@ -919,13 +1168,12 @@ class MainActivity : Activity(), SensorEventListener {
                 card.addView(lblView)
             }
 
-            // Minimalist White Micro-Dot or Inline Notification String (Section 1 & 8)
             if (app.inlineNotif != null && !isLabelFree) {
                 val notifView = TextView(this).apply {
                     text = app.inlineNotif
                     typeface = Typeface.MONOSPACE
                     textSize = 7f
-                    setTextColor(accentColor)
+                    setTextColor(if (useWallpaperIconTint) wallpaperExtractedColor else accentColor)
                     maxLines = 1
                 }
                 card.addView(notifView)
@@ -937,7 +1185,7 @@ class MainActivity : Activity(), SensorEventListener {
         for (app in favApps.take(4)) {
             val dockIcon = ImageView(this).apply {
                 setImageDrawable(app.icon.constantState?.newDrawable()?.mutate() ?: app.icon)
-                colorFilter = if (isMonoIcons) monoFilter else null
+                colorFilter = filter
                 setPadding(dp(8), dp(8), dp(8), dp(8))
                 layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
                 setOnClickListener { launchApp(app, false) }
@@ -1029,22 +1277,111 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun renderDrawerApps(query: String) {
-        // Render Stationary Pinned Top Shelf
+        val filter = buildDynamicIconFilter()
         pinnedShelfLayout.removeAllViews()
         val shelfApps = pinnedTopShelfPkgs.mapNotNull { p -> allApps.find { it.pkg == p } }
         for (a in shelfApps) {
             val img = ImageView(this).apply {
                 setImageDrawable(a.icon.constantState?.newDrawable()?.mutate() ?: a.icon)
-                colorFilter = if (isMonoIcons) monoFilter else null
+                colorFilter = filter
                 layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f)
                 setOnClickListener { launchApp(a, false) }
             }
             pinnedShelfLayout.addView(img)
         }
 
+        drawerMainContainer.removeAllViews()
         val clean = query.lowercase(Locale.getDefault())
+
+        // TAB 1: SMART ARRANGE HUBS (Distinct Categorized Cards with Each App's Distinct Real Name)
+        if (drawerTab == 1) {
+            val scroll = ScrollView(this).apply {
+                isVerticalScrollBarEnabled = false
+                layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            }
+            val categoriesColumn = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            }
+            val categoriesOrder = listOf("SOCIAL & COMMS", "MEDIA & CAMERA", "FINANCE & UPI", "PRODUCTIVITY", "GAMES & ARCADE", "SYSTEM & UTILITIES")
+            val visiblePool = allApps.filter {
+                !hiddenPkgs.contains(it.pkg) && !privateVaultPkgs.contains(it.pkg) &&
+                (clean.isEmpty() || it.customLabel.lowercase(Locale.getDefault()).contains(clean) || it.category.lowercase(Locale.getDefault()).contains(clean))
+            }
+
+            for (catName in categoriesOrder) {
+                val catApps = visiblePool.filter { it.category == catName }
+                if (catApps.isEmpty()) continue
+
+                val hubCard = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = roundRect(COLOR_CARD, dp(18), COLOR_STROKE)
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                        bottomMargin = dp(10)
+                    }
+                }
+                val hubHeader = TextView(this).apply {
+                    text = "// $catName (${catApps.size} APPS)"
+                    typeface = Typeface.MONOSPACE
+                    textSize = 9.5f
+                    setTextColor(if (useWallpaperIconTint) wallpaperExtractedColor else accentColor)
+                    setPadding(0, 0, 0, dp(8))
+                }
+                hubCard.addView(hubHeader)
+
+                val grid = GridLayout(this).apply {
+                    columnCount = gridColumns
+                    layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+                }
+                val cellW = (resources.displayMetrics.widthPixels - dp(56)) / gridColumns
+
+                for (app in catApps) {
+                    val itemCell = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        gravity = Gravity.CENTER
+                        setPadding(dp(4), dp(6), dp(4), dp(6))
+                        layoutParams = GridLayout.LayoutParams().apply {
+                            width = cellW
+                            height = ViewGroup.LayoutParams.WRAP_CONTENT
+                        }
+                        setOnClickListener { launchApp(app, false) }
+                        setOnLongClickListener {
+                            triggerHaptic(1)
+                            showShutterAndContextSheet(app, isPinned = favoritePkgs.contains(app.pkg))
+                            true
+                        }
+                    }
+                    val iconImg = ImageView(this).apply {
+                        setImageDrawable(app.icon.constantState?.newDrawable()?.mutate() ?: app.icon)
+                        colorFilter = filter
+                        layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
+                    }
+                    val appNameText = TextView(this).apply {
+                        text = app.customLabel // Distinct real app name!
+                        typeface = Typeface.MONOSPACE
+                        textSize = 8.5f
+                        setTextColor(COLOR_WHITE)
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                        gravity = Gravity.CENTER
+                        setPadding(0, dp(4), 0, 0)
+                    }
+                    itemCell.addView(iconImg)
+                    itemCell.addView(appNameText)
+                    grid.addView(itemCell)
+                }
+                hubCard.addView(grid)
+                categoriesColumn.addView(hubCard)
+            }
+            scroll.addView(categoriesColumn)
+            drawerMainContainer.addView(scroll)
+            return
+        }
+
+        // TABS 0, 2, 3: A-Z Grid, Ghost Shelf (>30D), or Vault
         val base = when (drawerTab) {
-            2 -> allApps.filter { it.lastOpenedDaysAgo >= 30 } // Ghost Shelf (>30 days)
+            2 -> allApps.filter { it.lastOpenedDaysAgo >= 30 }
             3 -> if (activeVaultMode == 2) allApps.filter { decoyVaultPkgs.contains(it.pkg) }
                  else allApps.filter { privateVaultPkgs.contains(it.pkg) || hiddenPkgs.contains(it.pkg) }
             else -> allApps.filter { !hiddenPkgs.contains(it.pkg) && !privateVaultPkgs.contains(it.pkg) }
@@ -1052,8 +1389,16 @@ class MainActivity : Activity(), SensorEventListener {
 
         val filtered = base.filter { clean.isEmpty() || it.customLabel.lowercase(Locale.getDefault()).contains(clean) }
 
-        appsGridView.numColumns = gridColumns
-        appsGridView.adapter = object : BaseAdapter() {
+        val gridView = GridView(this).apply {
+            numColumns = gridColumns
+            verticalSpacing = dp(10)
+            horizontalSpacing = dp(8)
+            stretchMode = GridView.STRETCH_COLUMN_WIDTH
+            isVerticalScrollBarEnabled = false
+            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+
+        gridView.adapter = object : BaseAdapter() {
             override fun getCount(): Int = filtered.size
             override fun getItem(position: Int): Any = filtered[position]
             override fun getItemId(position: Int): Long = position.toLong()
@@ -1065,9 +1410,9 @@ class MainActivity : Activity(), SensorEventListener {
                     setPadding(dp(4), dp(8), dp(4), dp(8))
                     background = roundRect(COLOR_CARD, dp(16), COLOR_STROKE)
                 }
-                if (drawerTab == 1 || drawerTab == 2) {
+                if (drawerTab == 2) {
                     val tag = TextView(this@MainActivity).apply {
-                        text = if (drawerTab == 2) "${app.lastOpenedDaysAgo}D IDLE" else app.category
+                        text = "${app.lastOpenedDaysAgo}D IDLE"
                         typeface = Typeface.MONOSPACE
                         textSize = 7f
                         setTextColor(accentColor)
@@ -1076,7 +1421,7 @@ class MainActivity : Activity(), SensorEventListener {
                 }
                 val img = ImageView(this@MainActivity).apply {
                     setImageDrawable(app.icon.constantState?.newDrawable()?.mutate() ?: app.icon)
-                    colorFilter = if (isMonoIcons) monoFilter else null
+                    colorFilter = filter
                     layoutParams = LinearLayout.LayoutParams(dp(38), dp(38)).apply { topMargin = dp(3) }
                 }
                 cell.addView(img)
@@ -1102,6 +1447,7 @@ class MainActivity : Activity(), SensorEventListener {
                 return cell
             }
         }
+        drawerMainContainer.addView(gridView)
     }
 
     // Section 2 & 6: App Shutter (Transient Widget Card) + Contextual Long-Press Sheet
@@ -1170,34 +1516,53 @@ class MainActivity : Activity(), SensorEventListener {
 
     private fun showArchitecturalConfigDialog() {
         val items = arrayOf(
+            "Monochrome Icon Pack: ${if (isMonoIcons) "ON" else "OFF (Original Colors)"}",
+            "Dynamic Wallpaper Icon Tint: ${if (useWallpaperIconTint) "AUTO-EXTRACTED FROM WALLPAPER" else "OFF"}",
+            "Change Live / System Wallpaper (Shows Behind Launcher)",
+            "Wallpaper Scrim Brightness: ${when (wallpaperDimAlpha) { 0 -> "100% Crystal Clear"; 55 -> "Subtle Glass (Default)"; else -> "Deep Dim" }}",
+            "Resize Smart Widget Stack: ${if (weatherWidgetSpan == 2) "2×1 Wide" else "1×1 Compact"}",
+            "Add System AppWidget (Native Android Widget Picker)",
+            "Double-Tap Gesture: ${when (doubleTapMode) { 0 -> "Instant Sleep/Lock"; 1 -> "Clear Wallpaper Peek"; else -> "Detox Mode" }}",
+            "HyperOS Full-Screen Gestures & Immersive Nav: ${if (hyperOsImmersiveGestures) "ACTIVE" else "STANDARD"}",
             "Desktop Grid Density: ${gridColumns}×${gridRows} (Tap to Cycle 4×5 / 5×5 / 6×6)",
             "Label-Free Silhouette Mode: ${if (isLabelFree) "ON" else "OFF"}",
-            "Silhouette Monochrome Shader: ${if (isMonoIcons) "ON" else "OFF"}",
             "Single-Handed Thumb Flow Arc: ${when (thumbArcMode) { 1 -> "RIGHT"; 2 -> "LEFT"; else -> "OFF" }}",
-            "Detox Minimalist Mode: ${if (isDetoxMode) "ACTIVE" else "OFF"}",
-            "Dynamic Accent Palette: Cycle Nothing Red / Cyber Cyan / NPU Emerald",
             "Unhide All Vault & Hidden Apps"
         )
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("KINETIC OS 4.0 // ENGINE CONFIGURATION")
+            .setTitle("KINETIC OS 4.0 // MASTER SETTINGS")
             .setItems(items) { _, idx ->
                 when (idx) {
-                    0 -> {
+                    0 -> isMonoIcons = !isMonoIcons
+                    1 -> useWallpaperIconTint = !useWallpaperIconTint
+                    2 -> {
+                        try { startActivity(Intent(Intent.ACTION_SET_WALLPAPER)) } catch (_: Exception) {}
+                        return@setItems
+                    }
+                    3 -> wallpaperDimAlpha = when (wallpaperDimAlpha) { 55 -> 0; 0 -> 140; else -> 55 }
+                    4 -> weatherWidgetSpan = if (weatherWidgetSpan == 1) 2 else 1
+                    5 -> {
+                        try {
+                            val id = appWidgetHost?.allocateAppWidgetId() ?: return@setItems
+                            val pickIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK).apply {
+                                putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, id)
+                            }
+                            startActivityForResult(pickIntent, 901)
+                        } catch (_: Exception) {}
+                        return@setItems
+                    }
+                    6 -> doubleTapMode = (doubleTapMode + 1) % 3
+                    7 -> {
+                        hyperOsImmersiveGestures = !hyperOsImmersiveGestures
+                        enforce120HzAndLiveWallpaperPipeline()
+                    }
+                    8 -> {
                         gridColumns = when (gridColumns) { 4 -> 5; 5 -> 6; else -> 4 }
                         gridRows = if (gridColumns == 4) 5 else 6
                     }
-                    1 -> isLabelFree = !isLabelFree
-                    2 -> isMonoIcons = !isMonoIcons
-                    3 -> thumbArcMode = (thumbArcMode + 1) % 3
-                    4 -> isDetoxMode = !isDetoxMode
-                    5 -> {
-                        accentColor = when (accentColor) {
-                            Color.parseColor("#D71921") -> Color.parseColor("#38BDF8")
-                            Color.parseColor("#38BDF8") -> Color.parseColor("#10B981")
-                            else -> Color.parseColor("#D71921")
-                        }
-                    }
-                    6 -> { hiddenPkgs.clear(); privateVaultPkgs.clear(); decoyVaultPkgs.clear() }
+                    9 -> isLabelFree = !isLabelFree
+                    10 -> thumbArcMode = (thumbArcMode + 1) % 3
+                    11 -> { hiddenPkgs.clear(); privateVaultPkgs.clear(); decoyVaultPkgs.clear() }
                 }
                 saveState()
                 buildMasterUI()
@@ -1208,28 +1573,84 @@ class MainActivity : Activity(), SensorEventListener {
             }.show()
     }
 
+    private fun showZeroStateGlanceSheet() {
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("ZERO-STATE // GLANCE & NOTIFICATIONS")
+            .setMessage(
+                "• Morning Context: Ahmedabad • 29°C Clear\n" +
+                "• Agenda: Product Architecture Sync (10:00 AM)\n" +
+                "• Commute: SG Highway • 14 mins (Clear)\n" +
+                "• Active Delivery: Zomato Order arriving in 6m"
+            )
+            .setPositiveButton("OPEN SYSTEM NOTIFICATIONS") { _, _ -> expandSystemNotifications() }
+            .setNeutralButton("CLOSE", null)
+            .show()
+    }
+
+    private fun showQuickControlCenterDialog() {
+        val controls = arrayOf(
+            "Toggle Flashlight / Torch (${if (isTorchOn) "ON" else "OFF"})",
+            "Toggle Monochrome Icons (${if (isMonoIcons) "ON" else "OFF"})",
+            "Toggle Wallpaper Auto Icon Tint (${if (useWallpaperIconTint) "ON" else "OFF"})",
+            "Open System Wi-Fi & Connectivity Panel",
+            "Open HyperOS System Quick Settings Shade",
+            "Open HyperOS Full-Screen Gesture Settings"
+        )
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("RIGHT PULL // QUICK CONTROL HUB")
+            .setItems(controls) { _, which ->
+                when (which) {
+                    0 -> toggleFlashlight()
+                    1 -> { isMonoIcons = !isMonoIcons; saveState(); renderDesktopGrid(); renderMaxFolders() }
+                    2 -> { useWallpaperIconTint = !useWallpaperIconTint; saveState(); renderDesktopGrid(); renderMaxFolders() }
+                    3 -> try { startActivity(Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY)) } catch (_: Exception) { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                    4 -> expandSystemQuickSettings()
+                    5 -> try { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) } catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                }
+            }
+            .show()
+    }
+
     private fun updateSmartStackUI() {
         when (smartStackIndex) {
             0 -> {
-                smartStackTitle.text = "STACK 1/4 // WEATHER"
+                smartStackTitle.text = "STACK 1/4 // WEATHER (${if (weatherWidgetSpan == 2) "2x1" else "1x1"})"
                 smartStackValue.text = "29°C CLEAR"
-                smartStackSub.text = "AHMEDABAD • AQI 64"
+                smartStackSub.text = "AHMEDABAD • HOLD TO RESIZE"
             }
             1 -> {
                 smartStackTitle.text = "STACK 2/4 // PEDOMETER"
                 smartStackValue.text = "$dailySteps STEPS"
-                smartStackSub.text = "GOAL: 6,000 • ${(dailySteps * 100 / 6000)}% DONE"
+                smartStackSub.text = "68% OF 6,000 GOAL"
             }
             2 -> {
                 smartStackTitle.text = "STACK 3/4 // COMPASS"
                 smartStackValue.text = "${compassAzimuth}° NE"
-                smartStackSub.text = "LIVE MAGNETOMETER"
+                smartStackSub.text = "CIVI MAGNETOMETER LIVE"
             }
             3 -> {
                 smartStackTitle.text = "STACK 4/4 // WELLNESS"
                 smartStackValue.text = "2H 14M ACTIVE"
-                smartStackSub.text = "RAM BASELINE: 23MB"
+                smartStackSub.text = "18% UNDER DAILY QUOTA"
             }
+        }
+    }
+
+    private fun expandSystemNotifications() {
+        try {
+            val sb = getSystemService("statusbar")
+            Class.forName("android.app.StatusBarManager").getMethod("expandNotificationsPanel").invoke(sb)
+        } catch (_: Exception) {
+            showZeroStateGlanceSheet()
+        }
+    }
+
+    private fun expandSystemQuickSettings() {
+        try {
+            val sb = getSystemService("statusbar")
+            Class.forName("android.app.StatusBarManager").getMethod("expandSettingsPanel").invoke(sb)
+        } catch (_: Exception) {
+            showQuickControlCenterDialog()
         }
     }
 
@@ -1350,13 +1771,6 @@ class MainActivity : Activity(), SensorEventListener {
                         else Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
             }
             startActivity(intent); closeDrawer()
-        } catch (_: Exception) {}
-    }
-
-    private fun expandSystemShade() {
-        try {
-            val sb = getSystemService("statusbar")
-            Class.forName("android.app.StatusBarManager").getMethod("expandNotificationsPanel").invoke(sb)
         } catch (_: Exception) {}
     }
 
