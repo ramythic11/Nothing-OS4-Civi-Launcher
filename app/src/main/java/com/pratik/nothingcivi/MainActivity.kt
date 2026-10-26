@@ -57,9 +57,19 @@ class MainActivity : Activity(), SensorEventListener {
     private var widgetOpacityAlpha = 165 // Translucent Glass Backing over Live Wallpaper
     private var accentColor = Color.parseColor("#D71921")
     private var wallpaperExtractedColor = Color.parseColor("#38BDF8")
+
+    // Structured Home Settings, Drawer & Organization, and Theming State
+    private var addAppsToHome = true // 1.1 Automatically place newly downloaded apps onto desktop
+    private var swipeDownBehavior = 0 // 1.2 0 = Notifications / Quick Settings, 1 = Universal Search
+    private var notificationDotsMode = 1 // 1.3 0 = White Dot Only, 1 = Dot + Count, 2 = Off
+    private var isLabelFree = false // 1.4 Global app icon labels / Show app names (!isLabelFree)
+    private var maxIconsEnabled = true // 1.5 Max Icons / Big Icons (2x2 scaling support)
+    private var lockLayout = false // 1.6 Lock layout to prevent accidental moves/deletions
+    private var smartAppCategorization = false // 2.1 App Library / Smart App Categorization default
+    private var autoOpenKeyboard = true // 2.2 Auto-open keyboard when drawer opens
+    private var iconPackMode = 0 // 3.2 0 = Nothing Mono + Wallpaper Tint, 1 = Pure Mono, 2 = System Color, 3 = High-Contrast Matrix
     private var useWallpaperIconTint = true
     private var isMonoIcons = true
-    private var isLabelFree = false
     private var isDetoxMode = false
     private var hyperOsImmersiveGestures = true
     private var doubleTapMode = 0 // 0 = Screen Sleep/Lock Overlay, 1 = Wallpaper Peek, 2 = Detox Mode
@@ -150,6 +160,26 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    // Play Store / Package Added Listener for "Add apps to Home screen" setting
+    private val pkgAddedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            val pkg = intent.data?.schemeSpecificPart ?: return
+            if (action == Intent.ACTION_PACKAGE_ADDED && !intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) {
+                if (addAppsToHome && !lockLayout && !favoritePkgs.contains(pkg)) {
+                    favoritePkgs.add(pkg)
+                    saveState()
+                }
+                loadAppsAsync()
+            } else if (action == Intent.ACTION_PACKAGE_REMOVED && !intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)) {
+                favoritePkgs.remove(pkg)
+                maxIconPkgs.remove(pkg)
+                saveState()
+                loadAppsAsync()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("kinetic_os4_master", Context.MODE_PRIVATE)
@@ -161,13 +191,24 @@ class MainActivity : Activity(), SensorEventListener {
         appWidgetHost = AppWidgetHost(this, 1024)
         appWidgetHost?.startListening()
 
+        registerReceiver(pkgAddedReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addDataScheme("package")
+        })
+
         buildMasterUI()
         updateAllTelemetry()
         loadAppsAsync()
     }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        try { unregisterReceiver(pkgAddedReceiver) } catch (_: Exception) {}
+        try { appWidgetHost?.stopListening() } catch (_: Exception) {}
+    }
+
     private fun enforce120HzAndLiveWallpaperPipeline() {
-        // Ensure Real Android System Wallpaper is visible behind launcher (No rigid black background)
         window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
         window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         window.statusBarColor = Color.TRANSPARENT
@@ -203,7 +244,6 @@ class MainActivity : Activity(), SensorEventListener {
     private fun applyExtractedWallpaperColors(colors: WallpaperColors) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             val primary = colors.primaryColor.toArgb()
-            // Boost luminance so icon tint is always legible over the live wallpaper
             val hsv = FloatArray(3)
             Color.colorToHSV(primary, hsv)
             hsv[1] = hsv[1].coerceAtLeast(0.55f)
@@ -218,9 +258,8 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun buildDynamicIconFilter(): ColorFilter? {
-        if (!isMonoIcons && !useWallpaperIconTint) return null
-        if (isMonoIcons && !useWallpaperIconTint) {
-            // Pure Crisp Nothing Monochrome Filter
+        if (iconPackMode == 2 || (!isMonoIcons && !useWallpaperIconTint)) return null
+        if (iconPackMode == 1 || (isMonoIcons && !useWallpaperIconTint)) {
             return ColorMatrixColorFilter(ColorMatrix().apply {
                 setSaturation(0f)
                 val c = 1.30f
@@ -233,7 +272,19 @@ class MainActivity : Activity(), SensorEventListener {
                 )))
             })
         }
-        // Wallpaper-Adaptive Monochrome Tint Filter (Tints icons to match live wallpaper!)
+        if (iconPackMode == 3) {
+            return ColorMatrixColorFilter(ColorMatrix().apply {
+                setSaturation(0f)
+                val c = 1.65f
+                val t = (-0.5f * c + 0.5f) * 255f
+                postConcat(ColorMatrix(floatArrayOf(
+                    c, 0f, 0f, 0f, t,
+                    0f, c, 0f, 0f, t,
+                    0f, 0f, c, 0f, t,
+                    0f, 0f, 0f, 1f, 0f
+                )))
+            })
+        }
         val r = Color.red(wallpaperExtractedColor) / 255f
         val g = Color.green(wallpaperExtractedColor) / 255f
         val b = Color.blue(wallpaperExtractedColor) / 255f
@@ -299,20 +350,39 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
+    private fun checkLayoutLocked(): Boolean {
+        if (lockLayout) {
+            triggerHaptic(1)
+            Toast.makeText(this, "Home screen layout is locked", Toast.LENGTH_SHORT).show()
+            return true
+        }
+        return false
+    }
+
     private fun loadState() {
         wallpaperDimAlpha = prefs.getInt("wall_dim", 55)
         widgetOpacityAlpha = prefs.getInt("widget_alpha", 165)
+        addAppsToHome = prefs.getBoolean("add_apps_home", true)
+        swipeDownBehavior = prefs.getInt("swipe_down_behavior", 0)
+        notificationDotsMode = prefs.getInt("notif_dots_mode", 1)
+        isLabelFree = prefs.getBoolean("label_free", false)
+        maxIconsEnabled = prefs.getBoolean("max_icons_enabled", true)
+        lockLayout = prefs.getBoolean("lock_layout", false)
+        smartAppCategorization = prefs.getBoolean("smart_cat_default", false)
+        autoOpenKeyboard = prefs.getBoolean("auto_open_kb", true)
+        iconPackMode = prefs.getInt("icon_pack_mode", 0)
         isMonoIcons = prefs.getBoolean("mono", true)
         useWallpaperIconTint = prefs.getBoolean("wall_tint", true)
-        isLabelFree = prefs.getBoolean("label_free", false)
         isDetoxMode = prefs.getBoolean("detox", false)
         hyperOsImmersiveGestures = prefs.getBoolean("hyperos_gestures", true)
         doubleTapMode = prefs.getInt("double_tap_mode", 0)
         gridColumns = prefs.getInt("grid_cols", 4)
+        gridRows = prefs.getInt("grid_rows", 5)
         weatherWidgetSpan = prefs.getInt("weather_span", 1)
         currentSpace = prefs.getString("space", "FOCUS") ?: "FOCUS"
         accentColor = prefs.getInt("accent", Color.parseColor("#D71921"))
         wallpaperExtractedColor = prefs.getInt("wall_color", Color.parseColor("#38BDF8"))
+        drawerTab = if (smartAppCategorization) 1 else 0
 
         maxIconPkgs.clear()
         maxIconPkgs.addAll(prefs.getStringSet("max_icons", emptySet()) ?: emptySet())
@@ -336,13 +406,22 @@ class MainActivity : Activity(), SensorEventListener {
         prefs.edit()
             .putInt("wall_dim", wallpaperDimAlpha)
             .putInt("widget_alpha", widgetOpacityAlpha)
+            .putBoolean("add_apps_home", addAppsToHome)
+            .putInt("swipe_down_behavior", swipeDownBehavior)
+            .putInt("notif_dots_mode", notificationDotsMode)
+            .putBoolean("label_free", isLabelFree)
+            .putBoolean("max_icons_enabled", maxIconsEnabled)
+            .putBoolean("lock_layout", lockLayout)
+            .putBoolean("smart_cat_default", smartAppCategorization)
+            .putBoolean("auto_open_kb", autoOpenKeyboard)
+            .putInt("icon_pack_mode", iconPackMode)
             .putBoolean("mono", isMonoIcons)
             .putBoolean("wall_tint", useWallpaperIconTint)
-            .putBoolean("label_free", isLabelFree)
             .putBoolean("detox", isDetoxMode)
             .putBoolean("hyperos_gestures", hyperOsImmersiveGestures)
             .putInt("double_tap_mode", doubleTapMode)
             .putInt("grid_cols", gridColumns)
+            .putInt("grid_rows", gridRows)
             .putInt("weather_span", weatherWidgetSpan)
             .putString("space", currentSpace)
             .putInt("accent", accentColor)
@@ -357,7 +436,6 @@ class MainActivity : Activity(), SensorEventListener {
     }
 
     private fun buildMasterUI() {
-        // Transparent scrim over real system wallpaper (NOT pitch-black rigid background)
         rootStack = FrameLayout(this).apply {
             setBackgroundColor(Color.argb(wallpaperDimAlpha, 0, 0, 0))
         }
@@ -368,7 +446,7 @@ class MainActivity : Activity(), SensorEventListener {
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
-        // Top Bar: Dynamic Spaces + Quick Monochrome & Wallpaper Settings Pills
+        // Top Bar: Dynamic Spaces + Quick Monochrome & Home Settings Pills
         spacePillsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -391,7 +469,7 @@ class MainActivity : Activity(), SensorEventListener {
             }
             setOnLongClickListener {
                 triggerHaptic(1)
-                showArchitecturalConfigDialog()
+                showHyperOsHomeSettingsDialog()
                 true
             }
         }
@@ -416,6 +494,7 @@ class MainActivity : Activity(), SensorEventListener {
             setOnClickListener {
                 triggerHaptic(0)
                 isMonoIcons = !isMonoIcons
+                iconPackMode = if (isMonoIcons) 0 else 2
                 saveState()
                 buildMasterUI()
                 updateAllTelemetry()
@@ -424,13 +503,13 @@ class MainActivity : Activity(), SensorEventListener {
             }
         }
         val cfgBtn = TextView(this).apply {
-            text = "SETTINGS ⚙"
+            text = "HOME CFG ⚙"
             typeface = Typeface.MONOSPACE
             textSize = 8.5f
             setTextColor(COLOR_WHITE)
             background = roundRect(accentColor, dp(10))
             setPadding(dp(8), dp(4), dp(8), dp(4))
-            setOnClickListener { showArchitecturalConfigDialog() }
+            setOnClickListener { showHyperOsHomeSettingsDialog() }
         }
         topRow.addView(dotMatrixHeader)
         topRow.addView(monoQuickBtn)
@@ -446,7 +525,7 @@ class MainActivity : Activity(), SensorEventListener {
         clockCard.addView(telemetrySubText)
         homeContainer.addView(clockCard)
 
-        // 2. Resizable Smart Widget Stack + Glyph Timer Bento (Long-Press or Tap Resize to toggle 1x1 vs 2x1 Full-Width)
+        // 2. Resizable Smart Widget Stack + Glyph Timer Bento
         bentoRowLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -467,6 +546,7 @@ class MainActivity : Activity(), SensorEventListener {
                 updateSmartStackUI()
             }
             setOnLongClickListener {
+                if (checkLayoutLocked()) return@setOnLongClickListener true
                 triggerHaptic(1)
                 weatherWidgetSpan = if (weatherWidgetSpan == 1) 2 else 1
                 saveState()
@@ -538,9 +618,9 @@ class MainActivity : Activity(), SensorEventListener {
         bentoRowLayout.addView(rightGlyphCard)
         homeContainer.addView(bentoRowLayout)
 
-        // 3. Quick Wallpaper, Widget Resize & Torch Bar
+        // 3. Quick Wallpaper & Style / Home Settings Strip
         peripheralStripText = TextView(this).apply {
-            text = "WALLPAPER: LIVE  •  TINT: ${if (useWallpaperIconTint) "AUTO" else "FIXED"}  •  TORCH: ${if (isTorchOn) "ON" else "OFF"}  •  TAP=WALLPAPER"
+            text = "GRID ${gridColumns}x${gridRows} • ${if (lockLayout) "LOCKED 🔒" else "UNLOCKED"} • HOLD EMPTY SPACE FOR HOME SETTINGS"
             typeface = Typeface.MONOSPACE
             textSize = 8f
             setTextColor(COLOR_WHITE)
@@ -551,9 +631,7 @@ class MainActivity : Activity(), SensorEventListener {
             }
             setOnClickListener {
                 triggerHaptic(0)
-                try {
-                    startActivity(Intent(Intent.ACTION_SET_WALLPAPER))
-                } catch (_: Exception) {}
+                showHyperOsHomeSettingsDialog()
             }
             setOnLongClickListener {
                 toggleFlashlight()
@@ -562,7 +640,7 @@ class MainActivity : Activity(), SensorEventListener {
         }
         homeContainer.addView(peripheralStripText)
 
-        // 4. Max Folders (2x2 Interactive Hubs with Direct 1-Tap Launch + Expand)
+        // 4. Max Folders (2x2 Interactive Hubs)
         maxFoldersRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
@@ -627,7 +705,7 @@ class MainActivity : Activity(), SensorEventListener {
             textSize = 9f
             setTextColor(accentColor)
             setPadding(dp(8), dp(6), dp(8), dp(6))
-            setOnClickListener { openDrawer(focusKb = false) }
+            setOnClickListener { openDrawer(focusKb = autoOpenKeyboard) }
         }
         searchBarRow.addView(agenticInput)
         searchBarRow.addView(openDrawerBtn)
@@ -652,7 +730,7 @@ class MainActivity : Activity(), SensorEventListener {
             layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
 
-        // ================= APP DRAWER LAYER (A-Z, SMART ARRANGE HUBS, GHOST SHELF, VAULT) =================
+        // ================= APP DRAWER LAYER =================
         drawerContainer = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.argb(215, 8, 10, 14))
@@ -716,7 +794,6 @@ class MainActivity : Activity(), SensorEventListener {
         }
         drawerContainer.addView(pinnedShelfLayout)
 
-        // Drawer Mode Tabs: A-Z | SMART ARRANGE | GHOST (>30D) | DECOY VAULT
         val tabsRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { bottomMargin = dp(8) }
@@ -776,9 +853,14 @@ class MainActivity : Activity(), SensorEventListener {
         rootStack.addView(drawerContainer)
         rootStack.addView(sleepLockOverlay)
 
-        // ================= MASTER GESTURE ENGINE (Swipe Up, Left Down, Right Down, Double-Tap, Edge Swipes) =================
+        // ================= MASTER GESTURE ENGINE (Long-Press Empty Space -> Home Settings) =================
         val gd = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onLongPress(e: MotionEvent) {
+                triggerHaptic(1)
+                showHyperOsHomeSettingsDialog()
+            }
 
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (e1 == null || isDrawerOpen) return false
@@ -786,37 +868,30 @@ class MainActivity : Activity(), SensorEventListener {
                 val dx = e2.x - e1.x
                 val screenW = resources.displayMetrics.widthPixels
 
-                // Vertical Swipe Gestures
                 if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > dp(50)) {
                     if (dy < 0) {
-                        // SWIPE UP -> Open App Drawer Smoothly
+                        // SWIPE UP -> Open App Drawer (Respects Auto-open keyboard setting)
                         triggerHaptic(0)
-                        openDrawer(focusKb = false)
+                        openDrawer(focusKb = autoOpenKeyboard)
                         return true
                     } else {
-                        // SWIPE DOWN -> Check Left Half vs Right Half!
+                        // SWIPE DOWN -> Respects "Swipe down on home screen" setting
                         triggerHaptic(0)
-                        if (e1.x < screenW * 0.5f) {
-                            // LEFT-SIDE PULL-DOWN -> System Notification Shade
+                        if (swipeDownBehavior == 1) {
+                            openDrawer(focusKb = true)
+                        } else if (e1.x < screenW * 0.5f) {
                             expandSystemNotifications()
                         } else {
-                            // RIGHT-SIDE PULL-DOWN -> HyperOS Quick Settings / Control Center
                             expandSystemQuickSettings()
                         }
                         return true
                     }
                 }
 
-                // Horizontal Edge & Page Swipes
                 if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > dp(65)) {
                     triggerHaptic(0)
-                    if (dx > 0) {
-                        // Swipe Right -> Zero-State AI Briefing & Glance Dialog
-                        showZeroStateGlanceSheet()
-                    } else {
-                        // Swipe Left -> Quick Control & HyperOS Hub
-                        showQuickControlCenterDialog()
-                    }
+                    if (dx > 0) showZeroStateGlanceSheet()
+                    else showQuickControlCenterDialog()
                     return true
                 }
                 return false
@@ -826,12 +901,10 @@ class MainActivity : Activity(), SensorEventListener {
                 triggerHaptic(1)
                 when (doubleTapMode) {
                     0 -> {
-                        // Instant Screen Lock / AOD Sleep Mode
                         isSleepOverlayActive = true
                         sleepLockOverlay.visibility = View.VISIBLE
                     }
                     1 -> {
-                        // Wallpaper Clear Peek Toggle
                         wallpaperDimAlpha = if (wallpaperDimAlpha > 15) 0 else 55
                         rootStack.setBackgroundColor(Color.argb(wallpaperDimAlpha, 0, 0, 0))
                         Toast.makeText(this@MainActivity, if (wallpaperDimAlpha == 0) "100% Clear Wallpaper Mode" else "Standard Scrim Mode", Toast.LENGTH_SHORT).show()
@@ -1035,11 +1108,11 @@ class MainActivity : Activity(), SensorEventListener {
         }
     }
 
-    // Section 7: Max Folders (2x2 with 3 Direct 1-Tap Icons + 1 Expand Slot)
     private fun renderMaxFolders() {
         maxFoldersRow.removeAllViews()
         val filter = buildDynamicIconFilter()
-        val folders = listOf("ESSENTIAL HUB" to allApps.take(4), "MEDIA & TOOLS" to allApps.drop(4).take(4))
+        val visiblePool = allApps.filter { !hiddenPkgs.contains(it.pkg) && !privateVaultPkgs.contains(it.pkg) }
+        val folders = listOf("ESSENTIAL HUB" to visiblePool.take(4), "MEDIA & TOOLS" to visiblePool.drop(4).take(4))
 
         for ((title, apps) in folders) {
             val box = LinearLayout(this).apply {
@@ -1107,12 +1180,14 @@ class MainActivity : Activity(), SensorEventListener {
         dockLayout.removeAllViews()
 
         val filter = buildDynamicIconFilter()
-        val favApps = favoritePkgs.mapNotNull { pkg -> allApps.find { it.pkg == pkg } }
+        val favApps = favoritePkgs.mapNotNull { pkg ->
+            allApps.find { it.pkg == pkg && !hiddenPkgs.contains(it.pkg) && !privateVaultPkgs.contains(it.pkg) }
+        }
         val screenWidth = resources.displayMetrics.widthPixels - dp(28)
         val cellSize = screenWidth / gridColumns
 
         for ((index, app) in favApps.withIndex()) {
-            val isMax = maxIconPkgs.contains(app.pkg)
+            val isMax = maxIconsEnabled && maxIconPkgs.contains(app.pkg)
             val span = if (isMax) 2 else 1
 
             val card = LinearLayout(this).apply {
@@ -1168,12 +1243,12 @@ class MainActivity : Activity(), SensorEventListener {
                 card.addView(lblView)
             }
 
-            if (app.inlineNotif != null && !isLabelFree) {
+            if (app.inlineNotif != null && notificationDotsMode != 2) {
                 val notifView = TextView(this).apply {
-                    text = app.inlineNotif
+                    text = if (notificationDotsMode == 0) "•" else app.inlineNotif
                     typeface = Typeface.MONOSPACE
-                    textSize = 7f
-                    setTextColor(if (useWallpaperIconTint) wallpaperExtractedColor else accentColor)
+                    textSize = if (notificationDotsMode == 0) 10f else 7f
+                    setTextColor(if (notificationDotsMode == 0) COLOR_WHITE else (if (useWallpaperIconTint) wallpaperExtractedColor else accentColor))
                     maxLines = 1
                 }
                 card.addView(notifView)
@@ -1183,14 +1258,35 @@ class MainActivity : Activity(), SensorEventListener {
         }
 
         for (app in favApps.take(4)) {
+            val dockCell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
+                setOnClickListener { launchApp(app, false) }
+                setOnLongClickListener {
+                    triggerHaptic(1)
+                    showShutterAndContextSheet(app, isPinned = true)
+                    true
+                }
+            }
             val dockIcon = ImageView(this).apply {
                 setImageDrawable(app.icon.constantState?.newDrawable()?.mutate() ?: app.icon)
                 colorFilter = filter
-                setPadding(dp(8), dp(8), dp(8), dp(8))
-                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
-                setOnClickListener { launchApp(app, false) }
+                layoutParams = LinearLayout.LayoutParams(dp(30), dp(30))
             }
-            dockLayout.addView(dockIcon)
+            dockCell.addView(dockIcon)
+            if (!isLabelFree) {
+                val dockLbl = TextView(this).apply {
+                    text = app.customLabel
+                    typeface = Typeface.MONOSPACE
+                    textSize = 7f
+                    setTextColor(COLOR_WHITE)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                }
+                dockCell.addView(dockLbl)
+            }
+            dockLayout.addView(dockCell)
         }
 
         val drawerBtn = TextView(this).apply {
@@ -1200,12 +1296,11 @@ class MainActivity : Activity(), SensorEventListener {
             setTextColor(accentColor)
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
-            setOnClickListener { openDrawer(focusKb = false) }
+            setOnClickListener { openDrawer(focusKb = autoOpenKeyboard) }
         }
         dockLayout.addView(drawerBtn)
     }
 
-    // Section 8: Detox Minimalist Typographic List
     private fun renderDetoxLayer() {
         detoxContainer.visibility = if (isDetoxMode) View.VISIBLE else View.GONE
         detoxContainer.removeAllViews()
@@ -1254,7 +1349,6 @@ class MainActivity : Activity(), SensorEventListener {
         detoxContainer.addView(exitBtn)
     }
 
-    // Section 5: Decoy Vault Gateway (Primary PIN vs Decoy PIN)
     private fun promptDecoyOrPrimaryVault() {
         val input = EditText(this).apply {
             hint = "PIN (1234=Primary Vault, 0000=Decoy Profile)"
@@ -1279,7 +1373,7 @@ class MainActivity : Activity(), SensorEventListener {
     private fun renderDrawerApps(query: String) {
         val filter = buildDynamicIconFilter()
         pinnedShelfLayout.removeAllViews()
-        val shelfApps = pinnedTopShelfPkgs.mapNotNull { p -> allApps.find { it.pkg == p } }
+        val shelfApps = pinnedTopShelfPkgs.mapNotNull { p -> allApps.find { it.pkg == p && !hiddenPkgs.contains(it.pkg) } }
         for (a in shelfApps) {
             val img = ImageView(this).apply {
                 setImageDrawable(a.icon.constantState?.newDrawable()?.mutate() ?: a.icon)
@@ -1293,7 +1387,7 @@ class MainActivity : Activity(), SensorEventListener {
         drawerMainContainer.removeAllViews()
         val clean = query.lowercase(Locale.getDefault())
 
-        // TAB 1: SMART ARRANGE HUBS (Distinct Categorized Cards with Each App's Distinct Real Name)
+        // TAB 1: SMART ARRANGE HUBS
         if (drawerTab == 1) {
             val scroll = ScrollView(this).apply {
                 isVerticalScrollBarEnabled = false
@@ -1358,7 +1452,7 @@ class MainActivity : Activity(), SensorEventListener {
                         layoutParams = LinearLayout.LayoutParams(dp(38), dp(38))
                     }
                     val appNameText = TextView(this).apply {
-                        text = app.customLabel // Distinct real app name!
+                        text = app.customLabel
                         typeface = Typeface.MONOSPACE
                         textSize = 8.5f
                         setTextColor(COLOR_WHITE)
@@ -1379,7 +1473,6 @@ class MainActivity : Activity(), SensorEventListener {
             return
         }
 
-        // TABS 0, 2, 3: A-Z Grid, Ghost Shelf (>30D), or Vault
         val base = when (drawerTab) {
             2 -> allApps.filter { it.lastOpenedDaysAgo >= 30 }
             3 -> if (activeVaultMode == 2) allApps.filter { decoyVaultPkgs.contains(it.pkg) }
@@ -1450,7 +1543,6 @@ class MainActivity : Activity(), SensorEventListener {
         drawerMainContainer.addView(gridView)
     }
 
-    // Section 2 & 6: App Shutter (Transient Widget Card) + Contextual Long-Press Sheet
     private fun showShutterAndContextSheet(app: AppEntry, isPinned: Boolean) {
         val isMax = maxIconPkgs.contains(app.pkg)
         val isMindful = mindfulPkgs.contains(app.pkg)
@@ -1458,17 +1550,20 @@ class MainActivity : Activity(), SensorEventListener {
 
         opts.add("SHUTTER // PEEK TRANSIENT WIDGET (${app.category})")
         if (isPinned) {
-            opts.add(if (isMax) "Resize to 1×1 Standard Tile" else "Enlarge to 2×2 Max Icon")
+            if (maxIconsEnabled) {
+                opts.add(if (isMax) "Resize to 1×1 Standard Tile" else "Enlarge to 2×2 Max Icon")
+            }
             opts.add("Unpin from Desktop")
         } else {
             opts.add("Pin to Desktop")
-            opts.add("Pin as 2×2 Max Icon")
+            if (maxIconsEnabled) opts.add("Pin as 2×2 Max Icon")
         }
         opts.add("Launch in Pop-Up / Split Window")
         opts.add("Rename App Label")
         opts.add(if (isMindful) "Disable Mindful Friction (3s)" else "Enable Mindful Friction (3s)")
+        opts.add("Hide App Icon")
         opts.add("Move to Primary Private Vault 🔒")
-        opts.add("Move to Decoy Vault Profile")
+        opts.add("Home Settings (HyperOS Menu)")
         opts.add("System App Info")
         opts.add("Uninstall App")
 
@@ -1479,20 +1574,32 @@ class MainActivity : Activity(), SensorEventListener {
                 when {
                     c.startsWith("SHUTTER") -> {
                         Toast.makeText(this, "${app.customLabel} Widget Shutter Active • Quota ${(app.dailyQuotaPct * 100).toInt()}%", Toast.LENGTH_SHORT).show()
+                        return@setItems
                     }
+                    c.startsWith("Launch in Pop-Up") -> { launchApp(app, true); return@setItems }
+                    c == "Home Settings (HyperOS Menu)" -> { showHyperOsHomeSettingsDialog(); return@setItems }
+                    c == "System App Info" -> {
+                        startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply { data = Uri.fromParts("package", app.pkg, null) })
+                        return@setItems
+                    }
+                    c == "Uninstall App" -> {
+                        if (checkLayoutLocked()) return@setItems
+                        startActivity(Intent(Intent.ACTION_DELETE).apply { data = Uri.fromParts("package", app.pkg, null) })
+                        return@setItems
+                    }
+                }
+                if (checkLayoutLocked()) return@setItems
+                when {
                     c.startsWith("Enlarge") -> maxIconPkgs.add(app.pkg)
                     c.startsWith("Resize") -> maxIconPkgs.remove(app.pkg)
                     c.startsWith("Unpin") -> { favoritePkgs.remove(app.pkg); maxIconPkgs.remove(app.pkg) }
                     c == "Pin to Desktop" -> if (!favoritePkgs.contains(app.pkg)) favoritePkgs.add(app.pkg)
                     c == "Pin as 2×2 Max Icon" -> { if (!favoritePkgs.contains(app.pkg)) favoritePkgs.add(app.pkg); maxIconPkgs.add(app.pkg) }
-                    c.startsWith("Launch in Pop-Up") -> { launchApp(app, true); return@setItems }
                     c == "Rename App Label" -> { promptRename(app); return@setItems }
                     c.startsWith("Enable Mindful") -> mindfulPkgs.add(app.pkg)
                     c.startsWith("Disable Mindful") -> mindfulPkgs.remove(app.pkg)
+                    c == "Hide App Icon" -> { hiddenPkgs.add(app.pkg); favoritePkgs.remove(app.pkg) }
                     c.startsWith("Move to Primary") -> { privateVaultPkgs.add(app.pkg); favoritePkgs.remove(app.pkg) }
-                    c.startsWith("Move to Decoy") -> { decoyVaultPkgs.add(app.pkg); favoritePkgs.remove(app.pkg) }
-                    c == "System App Info" -> startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply { data = Uri.fromParts("package", app.pkg, null) })
-                    c == "Uninstall App" -> startActivity(Intent(Intent.ACTION_DELETE).apply { data = Uri.fromParts("package", app.pkg, null) })
                 }
                 saveState()
                 renderDesktopGrid()
@@ -1514,34 +1621,62 @@ class MainActivity : Activity(), SensorEventListener {
             }.show()
     }
 
-    private fun showArchitecturalConfigDialog() {
+    // ================= HYPEROS INTEGRATED HOME SETTINGS (LONG-PRESS DESKTOP MENU) =================
+    private fun showHyperOsHomeSettingsDialog() {
+        val swipeLabel = if (swipeDownBehavior == 0) "Notifications / Quick Settings" else "Search"
+        val dotsLabel = when (notificationDotsMode) {
+            0 -> "White Dot Marker (•)"
+            1 -> "Standard Count (• 2 NEW)"
+            else -> "Off"
+        }
         val items = arrayOf(
-            "Monochrome Icon Pack: ${if (isMonoIcons) "ON" else "OFF (Original Colors)"}",
-            "Dynamic Wallpaper Icon Tint: ${if (useWallpaperIconTint) "AUTO-EXTRACTED FROM WALLPAPER" else "OFF"}",
-            "Change Live / System Wallpaper (Shows Behind Launcher)",
-            "Wallpaper Scrim Brightness: ${when (wallpaperDimAlpha) { 0 -> "100% Crystal Clear"; 55 -> "Subtle Glass (Default)"; else -> "Deep Dim" }}",
-            "Resize Smart Widget Stack: ${if (weatherWidgetSpan == 2) "2×1 Wide" else "1×1 Compact"}",
-            "Add System AppWidget (Native Android Widget Picker)",
-            "Double-Tap Gesture: ${when (doubleTapMode) { 0 -> "Instant Sleep/Lock"; 1 -> "Clear Wallpaper Peek"; else -> "Detox Mode" }}",
-            "HyperOS Full-Screen Gestures & Immersive Nav: ${if (hyperOsImmersiveGestures) "ACTIVE" else "STANDARD"}",
-            "Desktop Grid Density: ${gridColumns}×${gridRows} (Tap to Cycle 4×5 / 5×5 / 6×6)",
-            "Label-Free Silhouette Mode: ${if (isLabelFree) "ON" else "OFF"}",
-            "Single-Handed Thumb Flow Arc: ${when (thumbArcMode) { 1 -> "RIGHT"; 2 -> "LEFT"; else -> "OFF" }}",
-            "Unhide All Vault & Hidden Apps"
+            "1. Add apps to Home screen: ${if (addAppsToHome) "ON" else "OFF"}",
+            "2. Swipe down on home screen: $swipeLabel",
+            "3. Notification dots: $dotsLabel",
+            "4. Show app names (Global icon labels): ${if (!isLabelFree) "ON" else "OFF"}",
+            "5. Max Icons / Big Icons (2×2 scaling): ${if (maxIconsEnabled) "ON (Tap to configure)" else "OFF"}",
+            "6. Lock layout: ${if (lockLayout) "ON 🔒" else "OFF"}",
+            "7. Drawer & Organization Settings ↗",
+            "8. Customization & Theming (Wallpaper & Style) ↗",
+            "9. Add System AppWidget (Native Picker)"
         )
+
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("KINETIC OS 4.0 // MASTER SETTINGS")
+            .setTitle("HOME SETTINGS // KINETIC OS 4.0")
             .setItems(items) { _, idx ->
                 when (idx) {
-                    0 -> isMonoIcons = !isMonoIcons
-                    1 -> useWallpaperIconTint = !useWallpaperIconTint
-                    2 -> {
-                        try { startActivity(Intent(Intent.ACTION_SET_WALLPAPER)) } catch (_: Exception) {}
+                    0 -> {
+                        addAppsToHome = !addAppsToHome
+                        Toast.makeText(this, "Add apps to Home screen: ${if (addAppsToHome) "ON" else "OFF"}", Toast.LENGTH_SHORT).show()
+                    }
+                    1 -> {
+                        showSwipeDownSelectorDialog()
                         return@setItems
                     }
-                    3 -> wallpaperDimAlpha = when (wallpaperDimAlpha) { 55 -> 0; 0 -> 140; else -> 55 }
-                    4 -> weatherWidgetSpan = if (weatherWidgetSpan == 1) 2 else 1
+                    2 -> {
+                        notificationDotsMode = (notificationDotsMode + 1) % 3
+                    }
+                    3 -> {
+                        isLabelFree = !isLabelFree
+                    }
+                    4 -> {
+                        showMaxIconsConfigDialog()
+                        return@setItems
+                    }
                     5 -> {
+                        lockLayout = !lockLayout
+                        Toast.makeText(this, if (lockLayout) "Home screen layout locked 🔒" else "Home screen layout unlocked", Toast.LENGTH_SHORT).show()
+                    }
+                    6 -> {
+                        showDrawerOrganizationSettingsDialog()
+                        return@setItems
+                    }
+                    7 -> {
+                        showCustomizationThemingDialog()
+                        return@setItems
+                    }
+                    8 -> {
+                        if (checkLayoutLocked()) return@setItems
                         try {
                             val id = appWidgetHost?.allocateAppWidgetId() ?: return@setItems
                             val pickIntent = Intent(AppWidgetManager.ACTION_APPWIDGET_PICK).apply {
@@ -1551,18 +1686,6 @@ class MainActivity : Activity(), SensorEventListener {
                         } catch (_: Exception) {}
                         return@setItems
                     }
-                    6 -> doubleTapMode = (doubleTapMode + 1) % 3
-                    7 -> {
-                        hyperOsImmersiveGestures = !hyperOsImmersiveGestures
-                        enforce120HzAndLiveWallpaperPipeline()
-                    }
-                    8 -> {
-                        gridColumns = when (gridColumns) { 4 -> 5; 5 -> 6; else -> 4 }
-                        gridRows = if (gridColumns == 4) 5 else 6
-                    }
-                    9 -> isLabelFree = !isLabelFree
-                    10 -> thumbArcMode = (thumbArcMode + 1) % 3
-                    11 -> { hiddenPkgs.clear(); privateVaultPkgs.clear(); decoyVaultPkgs.clear() }
                 }
                 saveState()
                 buildMasterUI()
@@ -1570,7 +1693,216 @@ class MainActivity : Activity(), SensorEventListener {
                 renderMaxFolders()
                 renderDesktopGrid()
                 renderDetoxLayer()
-            }.show()
+            }
+            .setNegativeButton("CLOSE", null)
+            .show()
+    }
+
+    private fun showSwipeDownSelectorDialog() {
+        val options = arrayOf("Notifications / Quick Settings", "Universal Search")
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Swipe down on home screen")
+            .setSingleChoiceItems(options, swipeDownBehavior) { dialog, which ->
+                swipeDownBehavior = which
+                saveState()
+                dialog.dismiss()
+                showHyperOsHomeSettingsDialog()
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
+
+    private fun showMaxIconsConfigDialog() {
+        if (checkLayoutLocked()) return
+        val favApps = favoritePkgs.mapNotNull { p -> allApps.find { it.pkg == p } }
+        val labels = (listOf("Global Max Icons Support: ${if (maxIconsEnabled) "ENABLED" else "DISABLED"}") +
+            favApps.map { "${it.customLabel} (${if (maxIconPkgs.contains(it.pkg)) "2×2 BIG ICON" else "1×1 STANDARD"})" }).toTypedArray()
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("MAX ICONS / BIG ICONS (2×2)")
+            .setItems(labels) { _, which ->
+                if (which == 0) {
+                    maxIconsEnabled = !maxIconsEnabled
+                } else {
+                    val target = favApps[which - 1]
+                    if (maxIconPkgs.contains(target.pkg)) maxIconPkgs.remove(target.pkg)
+                    else maxIconPkgs.add(target.pkg)
+                }
+                saveState()
+                renderDesktopGrid()
+                showMaxIconsConfigDialog()
+            }
+            .setPositiveButton("DONE") { _, _ -> showHyperOsHomeSettingsDialog() }
+            .show()
+    }
+
+    // 2. Drawer & Organization Settings Sub-Menu
+    private fun showDrawerOrganizationSettingsDialog() {
+        val items = arrayOf(
+            "App Library / Smart App Categorization: ${if (smartAppCategorization) "ON (SMART HUBS)" else "OFF (A-Z LIST)"}",
+            "Auto-open keyboard: ${if (autoOpenKeyboard) "ON" else "OFF"}",
+            "Hide app icons (Management Screen — ${hiddenPkgs.size} hidden) ↗"
+        )
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("DRAWER & ORGANIZATION SETTINGS")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> {
+                        smartAppCategorization = !smartAppCategorization
+                        drawerTab = if (smartAppCategorization) 1 else 0
+                        saveState()
+                        showDrawerOrganizationSettingsDialog()
+                    }
+                    1 -> {
+                        autoOpenKeyboard = !autoOpenKeyboard
+                        saveState()
+                        showDrawerOrganizationSettingsDialog()
+                    }
+                    2 -> {
+                        showHideAppIconsManagementScreen()
+                    }
+                }
+            }
+            .setNegativeButton("← BACK") { _, _ -> showHyperOsHomeSettingsDialog() }
+            .show()
+    }
+
+    // Dedicated Management Screen for "Hide app icons"
+    private fun showHideAppIconsManagementScreen() {
+        val sortedApps = allApps.sortedBy { it.customLabel.lowercase(Locale.getDefault()) }
+        val names = sortedApps.map { it.customLabel }.toTypedArray()
+        val checked = BooleanArray(sortedApps.size) { idx -> hiddenPkgs.contains(sortedApps[idx].pkg) }
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("HIDE APP ICONS // SELECT TO HIDE")
+            .setMultiChoiceItems(names, checked) { _, which, isChecked ->
+                val pkg = sortedApps[which].pkg
+                if (isChecked) {
+                    hiddenPkgs.add(pkg)
+                } else {
+                    hiddenPkgs.remove(pkg)
+                }
+            }
+            .setPositiveButton("APPLY") { _, _ ->
+                saveState()
+                renderMaxFolders()
+                renderDesktopGrid()
+                if (isDrawerOpen) renderDrawerApps(drawerSearchInput.text.toString())
+                Toast.makeText(this, "${hiddenPkgs.size} apps hidden", Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("UNHIDE ALL") { _, _ ->
+                hiddenPkgs.clear()
+                saveState()
+                renderMaxFolders()
+                renderDesktopGrid()
+                if (isDrawerOpen) renderDrawerApps(drawerSearchInput.text.toString())
+            }
+            .show()
+    }
+
+    // 3. Customization & Theming Sub-Menu (Wallpaper & Style)
+    private fun showCustomizationThemingDialog() {
+        val packName = when (iconPackMode) {
+            0 -> "Nothing Mono + Wallpaper Tint"
+            1 -> "Nothing Pure Monochrome"
+            2 -> "Default System Color"
+            else -> "Dot-Matrix High Contrast"
+        }
+        val items = arrayOf(
+            "Dark theme / Material Style: ${if (useWallpaperIconTint) "DYNAMIC WALLPAPER TINT + MONO" else "DARK MATTE"}",
+            "Icon Pack: $packName ↗",
+            "Grid Size / Layout Density: ${gridColumns}×${gridRows} ↗",
+            "Wallpaper Scrim Brightness: ${when (wallpaperDimAlpha) { 0 -> "100% Crystal Clear"; 55 -> "Subtle Glass"; else -> "Deep Dark" }}",
+            "Change System / Live Wallpaper ↗"
+        )
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("WALLPAPER & STYLE // THEMING")
+            .setItems(items) { _, idx ->
+                when (idx) {
+                    0 -> {
+                        useWallpaperIconTint = !useWallpaperIconTint
+                        isMonoIcons = true
+                        saveState()
+                        buildMasterUI()
+                        renderMaxFolders()
+                        renderDesktopGrid()
+                        showCustomizationThemingDialog()
+                    }
+                    1 -> showIconPackSelectorDialog()
+                    2 -> showGridSizeSelectorDialog()
+                    3 -> {
+                        wallpaperDimAlpha = when (wallpaperDimAlpha) { 55 -> 0; 0 -> 140; else -> 55 }
+                        saveState()
+                        buildMasterUI()
+                        renderMaxFolders()
+                        renderDesktopGrid()
+                        showCustomizationThemingDialog()
+                    }
+                    4 -> {
+                        try { startActivity(Intent(Intent.ACTION_SET_WALLPAPER)) } catch (_: Exception) {}
+                    }
+                }
+            }
+            .setNegativeButton("← BACK") { _, _ -> showHyperOsHomeSettingsDialog() }
+            .show()
+    }
+
+    private fun showIconPackSelectorDialog() {
+        val packs = mutableListOf(
+            "Nothing Monochrome + Auto Wallpaper Tint",
+            "Nothing Pure Monochrome Silhouette",
+            "Default System Color Icons",
+            "Dot-Matrix High-Contrast"
+        )
+        try {
+            val themes = packageManager.queryIntentActivities(Intent("org.adw.launcher.THEMES"), 0)
+            for (ri in themes) {
+                packs.add("External Pack: ${ri.loadLabel(packageManager)}")
+            }
+        } catch (_: Exception) {}
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("ICON PACK SELECTOR")
+            .setSingleChoiceItems(packs.toTypedArray(), iconPackMode.coerceIn(0, packs.size - 1)) { dialog, which ->
+                iconPackMode = which.coerceIn(0, 3)
+                when (iconPackMode) {
+                    0 -> { isMonoIcons = true; useWallpaperIconTint = true }
+                    1 -> { isMonoIcons = true; useWallpaperIconTint = false }
+                    2 -> { isMonoIcons = false; useWallpaperIconTint = false }
+                    3 -> { isMonoIcons = true; useWallpaperIconTint = false }
+                }
+                saveState()
+                buildMasterUI()
+                renderMaxFolders()
+                renderDesktopGrid()
+                dialog.dismiss()
+                showCustomizationThemingDialog()
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
+    }
+
+    private fun showGridSizeSelectorDialog() {
+        if (checkLayoutLocked()) return
+        val grids = arrayOf("4×5 (Default Balanced)", "4×6 (Tall)", "5×5 (Compact)", "5×6 (Dense)", "6×6 (Ultra Dense)")
+        val pairs = listOf(4 to 5, 4 to 6, 5 to 5, 5 to 6, 6 to 6)
+        val currentIdx = pairs.indexOfFirst { it.first == gridColumns && it.second == gridRows }.coerceAtLeast(0)
+
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("GRID SIZE / LAYOUT DENSITY")
+            .setSingleChoiceItems(grids, currentIdx) { dialog, which ->
+                gridColumns = pairs[which].first
+                gridRows = pairs[which].second
+                saveState()
+                buildMasterUI()
+                renderMaxFolders()
+                renderDesktopGrid()
+                dialog.dismiss()
+                showCustomizationThemingDialog()
+            }
+            .setNegativeButton("CANCEL", null)
+            .show()
     }
 
     private fun showZeroStateGlanceSheet() {
@@ -1592,9 +1924,9 @@ class MainActivity : Activity(), SensorEventListener {
             "Toggle Flashlight / Torch (${if (isTorchOn) "ON" else "OFF"})",
             "Toggle Monochrome Icons (${if (isMonoIcons) "ON" else "OFF"})",
             "Toggle Wallpaper Auto Icon Tint (${if (useWallpaperIconTint) "ON" else "OFF"})",
+            "Open Home Settings (HyperOS Menu)",
             "Open System Wi-Fi & Connectivity Panel",
-            "Open HyperOS System Quick Settings Shade",
-            "Open HyperOS Full-Screen Gesture Settings"
+            "Open HyperOS System Quick Settings Shade"
         )
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle("RIGHT PULL // QUICK CONTROL HUB")
@@ -1603,251 +1935,10 @@ class MainActivity : Activity(), SensorEventListener {
                     0 -> toggleFlashlight()
                     1 -> { isMonoIcons = !isMonoIcons; saveState(); renderDesktopGrid(); renderMaxFolders() }
                     2 -> { useWallpaperIconTint = !useWallpaperIconTint; saveState(); renderDesktopGrid(); renderMaxFolders() }
-                    3 -> try { startActivity(Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY)) } catch (_: Exception) { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
-                    4 -> expandSystemQuickSettings()
-                    5 -> try { startActivity(Intent(Settings.ACTION_HOME_SETTINGS)) } catch (_: Exception) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
+                    3 -> showHyperOsHomeSettingsDialog()
+                    4 -> try { startActivity(Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY)) } catch (_: Exception) { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }
+                    5 -> expandSystemQuickSettings()
                 }
             }
             .show()
     }
-
-    private fun updateSmartStackUI() {
-        when (smartStackIndex) {
-            0 -> {
-                smartStackTitle.text = "STACK 1/4 // WEATHER (${if (weatherWidgetSpan == 2) "2x1" else "1x1"})"
-                smartStackValue.text = "29°C CLEAR"
-                smartStackSub.text = "AHMEDABAD • HOLD TO RESIZE"
-            }
-            1 -> {
-                smartStackTitle.text = "STACK 2/4 // PEDOMETER"
-                smartStackValue.text = "$dailySteps STEPS"
-                smartStackSub.text = "68% OF 6,000 GOAL"
-            }
-            2 -> {
-                smartStackTitle.text = "STACK 3/4 // COMPASS"
-                smartStackValue.text = "${compassAzimuth}° NE"
-                smartStackSub.text = "CIVI MAGNETOMETER LIVE"
-            }
-            3 -> {
-                smartStackTitle.text = "STACK 4/4 // WELLNESS"
-                smartStackValue.text = "2H 14M ACTIVE"
-                smartStackSub.text = "18% UNDER DAILY QUOTA"
-            }
-        }
-    }
-
-    private fun expandSystemNotifications() {
-        try {
-            val sb = getSystemService("statusbar")
-            Class.forName("android.app.StatusBarManager").getMethod("expandNotificationsPanel").invoke(sb)
-        } catch (_: Exception) {
-            showZeroStateGlanceSheet()
-        }
-    }
-
-    private fun expandSystemQuickSettings() {
-        try {
-            val sb = getSystemService("statusbar")
-            Class.forName("android.app.StatusBarManager").getMethod("expandSettingsPanel").invoke(sb)
-        } catch (_: Exception) {
-            showQuickControlCenterDialog()
-        }
-    }
-
-    private fun updateAllTelemetry() {
-        val now = Date()
-        val bm = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-        val level = bm?.getIntExtra(BatteryManager.EXTRA_LEVEL, 86) ?: 86
-        val tempC = (bm?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 310) ?: 310) / 10.0f
-
-        when (clockFaceMode) {
-            0 -> {
-                dotMatrixHeader.setDotText(SimpleDateFormat("HH:mm", Locale.getDefault()).format(now))
-                telemetrySubText.text = "SPACE: $currentSpace  //  BAT $level%  //  ${tempC}°C  //  120HZ"
-            }
-            1 -> {
-                dotMatrixHeader.setDotText(SimpleDateFormat("hh.mm", Locale.getDefault()).format(now))
-                telemetrySubText.text = "ANALOG MINIMAL  //  SPACE: $currentSpace  //  120HZ"
-            }
-            2 -> {
-                val utc = SimpleDateFormat("HH:mm", Locale.getDefault()).apply { timeZone = TimeZone.getTimeZone("UTC") }
-                dotMatrixHeader.setDotText(utc.format(now))
-                telemetrySubText.text = "WORLD UTC  //  IST +5:30  //  BAT $level%"
-            }
-            3 -> {
-                val am = getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-                val mem = ActivityManager.MemoryInfo(); am.getMemoryInfo(mem)
-                val availGb = String.format(Locale.US, "%.1f", mem.availMem / (1024.0 * 1024.0 * 1024.0))
-                dotMatrixHeader.setDotText("$level:$tempC".take(5))
-                telemetrySubText.text = "FREE RAM: ${availGb}GB  //  NPU IDLE  //  ZERO WAKE-LOCKS"
-            }
-        }
-        updateSmartStackUI()
-    }
-
-    private fun toggleGlyphTimer() {
-        triggerHaptic(0)
-        if (glyphRunning) {
-            glyphRunning = false
-            glyphRunnable?.let { mainHandler.removeCallbacks(it) }
-            glyphStatusText.text = "PAUSED // ${formatSec(glyphSecondsLeft)}"
-        } else {
-            glyphRunning = true
-            glyphRunnable = object : Runnable {
-                override fun run() {
-                    if (!glyphRunning) return
-                    if (glyphSecondsLeft > 0) {
-                        glyphSecondsLeft--
-                        glyphProgressView.setProgress(1f - (glyphSecondsLeft / (25f * 60f)))
-                        glyphStatusText.text = "GLYPH TIMER // ${formatSec(glyphSecondsLeft)}"
-                        mainHandler.postDelayed(this, 1000L)
-                    } else {
-                        glyphRunning = false; triggerHaptic(1)
-                        glyphStatusText.text = "COMPLETE // TAP RESTART"; glyphSecondsLeft = 25 * 60
-                    }
-                }
-            }
-            mainHandler.post(glyphRunnable!!)
-        }
-    }
-
-    private fun resetGlyphTimer() {
-        triggerHaptic(1); glyphRunning = false; glyphRunnable?.let { mainHandler.removeCallbacks(it) }
-        glyphSecondsLeft = 25 * 60; glyphProgressView.setProgress(0f); glyphStatusText.text = "GLYPH TIMER // 25:00"
-    }
-
-    private fun formatSec(s: Int): String = String.format(Locale.US, "%02d:%02d", s / 60, s % 60)
-
-    private fun dispatchMediaKey(code: Int) {
-        try {
-            val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            val now = SystemClock.uptimeMillis()
-            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_DOWN, code, 0))
-            am.dispatchMediaKeyEvent(KeyEvent(now, now, KeyEvent.ACTION_UP, code, 0))
-        } catch (_: Exception) {}
-    }
-
-    private fun toggleFlashlight() {
-        try {
-            val cm = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val id = cm.cameraIdList.firstOrNull() ?: return
-            isTorchOn = !isTorchOn
-            cm.setTorchMode(id, isTorchOn)
-            peripheralStripText.text = "PERIPHERALS // EAR(3): 92%  •  WATCH: 64%  •  TORCH: ${if (isTorchOn) "ON" else "OFF"}"
-        } catch (_: Exception) {}
-    }
-
-    private fun openDrawer(focusKb: Boolean) {
-        isDrawerOpen = true
-        drawerContainer.visibility = View.VISIBLE
-        renderDrawerApps(drawerSearchInput.text.toString())
-        if (focusKb) {
-            drawerSearchInput.requestFocus()
-            (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).showSoftInput(drawerSearchInput, InputMethodManager.SHOW_IMPLICIT)
-        }
-    }
-
-    private fun closeDrawer() {
-        isDrawerOpen = false
-        (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(drawerSearchInput.windowToken, 0)
-        drawerSearchInput.setText("")
-        drawerContainer.visibility = View.GONE
-    }
-
-    private fun launchApp(app: AppEntry, popUp: Boolean) {
-        triggerHaptic(0)
-        if (mindfulPkgs.contains(app.pkg)) {
-            Toast.makeText(this, "MINDFUL FRICTION // Breathing delay 3s for ${app.customLabel}...", Toast.LENGTH_SHORT).show()
-            mainHandler.postDelayed({ executeLaunch(app, popUp) }, 3000L)
-        } else executeLaunch(app, popUp)
-    }
-
-    private fun executeLaunch(app: AppEntry, popUp: Boolean) {
-        try {
-            val intent = Intent(Intent.ACTION_MAIN).apply {
-                addCategory(Intent.CATEGORY_LAUNCHER)
-                component = ComponentName(app.pkg, app.activityName)
-                flags = if (popUp) Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-                        else Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-            }
-            startActivity(intent); closeDrawer()
-        } catch (_: Exception) {}
-    }
-
-    override fun onResume() {
-        super.onResume()
-        registerReceiver(tickReceiver, IntentFilter().apply {
-            addAction(Intent.ACTION_TIME_TICK); addAction(Intent.ACTION_TIME_CHANGED); addAction(Intent.ACTION_BATTERY_CHANGED)
-        })
-        updateAllTelemetry()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        try { unregisterReceiver(tickReceiver) } catch (_: Exception) {}
-    }
-
-    @Deprecated("Predictive Back Handler")
-    override fun onBackPressed() {
-        if (isDrawerOpen) closeDrawer()
-    }
-
-    private fun dp(v: Int): Int = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v.toFloat(), resources.displayMetrics).toInt()
-
-    private fun roundRect(fill: Int, rad: Int, stroke: Int? = null): GradientDrawable = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE; cornerRadius = rad.toFloat(); setColor(fill)
-        if (stroke != null) setStroke(dp(1), stroke)
-    }
-
-    class DotProgressBarView(context: Context, private val litColor: Int) : View(context) {
-        private var progress = 0f
-        private val litPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = litColor }
-        private val dimPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#2A2A2E") }
-        fun setProgress(p: Float) { progress = p.coerceIn(0f, 1f); invalidate() }
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val dots = 20; val sp = width / dots.toFloat()
-            val r = (sp * 0.34f).coerceAtMost(height * 0.4f); val cy = height / 2f
-            val active = (progress * dots).toInt()
-            for (i in 0 until dots) canvas.drawCircle((i + 0.5f) * sp, cy, r, if (i <= active && progress > 0f) litPaint else dimPaint)
-        }
-    }
-
-    class DotMatrixView(context: Context, private val accentColor: Int) : View(context) {
-        private var currentText = "22:20"
-        private val whitePaint = Paint().apply { color = Color.WHITE; isAntiAlias = false }
-        private val redPaint = Paint().apply { color = accentColor; isAntiAlias = false }
-        private val offPaint = Paint().apply { color = Color.parseColor("#222226"); isAntiAlias = false }
-        private val glyphs = mapOf(
-            '0' to arrayOf("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
-            '1' to arrayOf("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
-            '2' to arrayOf("01110", "10001", "00001", "00110", "01000", "10000", "11111"),
-            '3' to arrayOf("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
-            '4' to arrayOf("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
-            '5' to arrayOf("11111", "10000", "11110", "00001", "00001", "10001", "01110"),
-            '6' to arrayOf("00110", "01000", "10000", "11110", "10001", "10001", "01110"),
-            '7' to arrayOf("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
-            '8' to arrayOf("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
-            '9' to arrayOf("01110", "10001", "10001", "01111", "00001", "00010", "01100"),
-            ':' to arrayOf("000", "010", "010", "000", "010", "010", "000"),
-            '.' to arrayOf("00", "00", "00", "00", "00", "11", "11")
-        )
-        fun setDotText(t: String) { if (currentText != t) { currentText = t; invalidate() } }
-        override fun onDraw(canvas: Canvas) {
-            super.onDraw(canvas)
-            val rows = 7; val sp = height / (rows + 1f); val r = sp * 0.36f; var cxCursor = sp
-            for (ch in currentText) {
-                val m = glyphs[ch] ?: continue
-                val cols = m[0].length
-                for (row in 0 until rows) {
-                    for (col in 0 until cols) {
-                        val lit = m[row][col] == '1'
-                        val p = when { !lit -> offPaint; ch == ':' || ch == '.' -> redPaint; else -> whitePaint }
-                        canvas.drawCircle(cxCursor + col * sp, (row + 1) * sp, r, p)
-                    }
-                }
-                cxCursor += (cols + 1.4f) * sp
-            }
-        }
-    }
-}
